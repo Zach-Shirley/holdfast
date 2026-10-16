@@ -226,33 +226,51 @@ button.primary:hover {
   }
 }
 
-/* ---------- Mini-game panel ---------- */
+/* ---------- Mini-game: takes over the screen, the battle keeps running underneath ---------- */
 .mg {
   position: fixed;
-  left: 50%;
-  bottom: 18px;
-  transform: translateX(-50%);
-  width: 360px;
-  padding: 12px 18px 14px;
-  background: rgba(14, 10, 14, 0.94);
-  border: 1px solid rgba(255, 95, 116, 0.45);
-  border-radius: 16px;
-  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.6), 0 0 30px rgba(226, 54, 77, 0.18);
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 16px;
+  background: radial-gradient(ellipse at center, rgba(30, 6, 12, 0.94), rgba(3, 3, 6, 0.985) 70%);
+  backdrop-filter: blur(10px);
   z-index: 8;
   cursor: pointer;
 }
-.mg.mg-rally {
+.mg.closing {
+  animation: mg-out 0.5s ease-in forwards;
+}
+@keyframes mg-out {
+  60% {
+    opacity: 1;
+  }
+  to {
+    opacity: 0;
+  }
+}
+.mg-card {
+  width: min(500px, 100%);
+  padding: 18px 22px 16px;
+  background: rgba(16, 11, 15, 0.96);
+  border: 1px solid rgba(255, 95, 116, 0.5);
+  border-radius: 20px;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.7), 0 0 50px rgba(226, 54, 77, 0.2);
+}
+.mg.mg-rally .mg-card {
   border-color: rgba(110, 231, 160, 0.5);
-  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.6), 0 0 30px rgba(110, 231, 160, 0.15);
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.7), 0 0 50px rgba(110, 231, 160, 0.15);
 }
 .mg-head {
   display: flex;
   justify-content: space-between;
   align-items: baseline;
-  margin-bottom: 8px;
+  gap: 12px;
+  margin-bottom: 10px;
 }
 .mg-title {
   font-weight: 700;
+  font-size: 18px;
   letter-spacing: 0.04em;
 }
 .mg-strike .mg-title {
@@ -264,47 +282,16 @@ button.primary:hover {
 .mg-hint {
   font-size: 12px;
   color: var(--muted);
+  text-align: right;
 }
 .mg-canvas {
-  width: 320px;
-  height: 38px;
+  width: 100%;
+  aspect-ratio: 2;
   display: block;
-  margin: 0 auto;
-}
-.mg-seq {
-  display: flex;
-  justify-content: center;
-  gap: 10px;
-}
-.mg-seq span {
-  width: 52px;
-  height: 46px;
-  display: grid;
-  place-items: center;
-  font-size: 26px;
-  font-weight: 700;
-  border-radius: 12px;
-  background: rgba(255, 255, 255, 0.05);
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  color: var(--muted);
-}
-.mg-seq span.next {
-  border-color: var(--green);
-  color: var(--text);
-}
-.mg-seq span.ok {
-  background: rgba(110, 231, 160, 0.2);
-  border-color: var(--green);
-  color: var(--green);
-}
-.mg-seq span.bad {
-  background: rgba(255, 90, 90, 0.2);
-  border-color: #ff5a5a;
-  color: #ff8a8a;
 }
 .mg-timer {
-  height: 4px;
-  margin-top: 10px;
+  height: 5px;
+  margin-top: 12px;
   background: rgba(255, 255, 255, 0.06);
   border-radius: 99px;
   overflow: hidden;
@@ -319,8 +306,8 @@ button.primary:hover {
 .mg-result {
   text-align: center;
   font-weight: 700;
-  min-height: 0;
-  margin-top: 6px;
+  font-size: 20px;
+  margin-top: 10px;
 }
 .mg-result:empty {
   display: none;
@@ -328,11 +315,22 @@ button.primary:hover {
 .mg-result.q2 {
   color: var(--amber);
 }
+.mg-rally .mg-result.q2 {
+  color: var(--green);
+}
 .mg-result.q1 {
   color: var(--text);
 }
 .mg-result.q0 {
   color: var(--muted);
+}
+.mg-foot {
+  margin-top: 10px;
+  text-align: center;
+  font-size: 11px;
+  color: var(--muted);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
 }
 
 /* ---------- Overlays ---------- */

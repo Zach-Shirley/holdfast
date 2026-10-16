@@ -1,6 +1,6 @@
 import { FOREST, HILL, MOUNTAIN, PLAIN, WATER, type GameMap, type Pt } from './map';
 import { makeNoise, mulberry32 } from './rng';
-import { CAPTURE_TIME, HQ_RADIUS, canRally, canStrike, isBuffed, type Game, type Unit } from './sim';
+import { CAPTURE_TIME, CUT_OFF_LIFE, HQ_RADIUS, VISION, canRally, canSee, canStrike, isBuffed, type Game, type Unit } from './sim';
 
 export const TEAM_COLOR = ['#e2364d', '#4aa3d8'];
 const TEAM_DARK = ['#5c1220', '#123a55'];
@@ -140,6 +140,7 @@ export class Renderer {
   private map: GameMap | null = null;
   private supplyCanvas: HTMLCanvasElement | null = null;
   private supplySrc: Uint8Array | null = null;
+  private fogCanvas: HTMLCanvasElement | null = null;
   scale = 10;
   ox = 0;
   oy = 0;
@@ -218,6 +219,34 @@ export class Renderer {
     return c;
   }
 
+  /** Low-resolution fog mask, scaled up so vision edges come out soft. */
+  private fogLayer(g: Game): HTMLCanvasElement {
+    const m = g.map;
+    const k = 3;
+    const c = this.fogCanvas ?? document.createElement('canvas');
+    c.width = m.w * k;
+    c.height = m.h * k;
+    const ctx = c.getContext('2d')!;
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.clearRect(0, 0, c.width, c.height);
+    ctx.fillStyle = 'rgba(3,4,8,0.74)';
+    ctx.fillRect(0, 0, c.width, c.height);
+    ctx.globalCompositeOperation = 'destination-out';
+    const eyes = [m.hq[0], ...g.units.filter((u) => u.alive && u.team === 0)];
+    for (const e of eyes) {
+      const grad = ctx.createRadialGradient(e.x * k, e.y * k, VISION * k * 0.75, e.x * k, e.y * k, VISION * k);
+      grad.addColorStop(0, 'rgba(0,0,0,1)');
+      grad.addColorStop(1, 'rgba(0,0,0,0)');
+      ctx.fillStyle = grad;
+      ctx.beginPath();
+      ctx.arc(e.x * k, e.y * k, VISION * k, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.globalCompositeOperation = 'source-over';
+    this.fogCanvas = c;
+    return c;
+  }
+
   draw(g: Game, ui: UiState): Badge[] {
     const { ctx } = this;
     const m = g.map;
@@ -236,7 +265,13 @@ export class Renderer {
       ctx.drawImage(this.supplyLayer(g.supply[0]), this.ox, this.oy, m.w * s, m.h * s);
     }
 
-    // Strongholds.
+    if (g.fog) {
+      ctx.imageSmoothingEnabled = true;
+      ctx.drawImage(this.fogLayer(g), this.ox, this.oy, m.w * s, m.h * s);
+    }
+    const seen = (p: { x: number; y: number }) => canSee(g, 0, p);
+
+    // Strongholds (their location is always known).
     for (const team of [0, 1] as const) {
       const p = this.w2s(m.hq[team]);
       const r = HQ_RADIUS * s;
@@ -277,7 +312,7 @@ export class Renderer {
       ctx.fill();
     }
 
-    const living = g.units.filter((u) => u.alive);
+    const living = g.units.filter((u) => u.alive && (u.team === 0 || seen(u)));
     // Planned paths of selected units.
     ctx.save();
     ctx.setLineDash([3, 4]);
@@ -311,6 +346,7 @@ export class Renderer {
     // Ranged tracers.
     for (const e of g.events) {
       if (e.kind !== 'shot' || e.x2 === undefined || e.y2 === undefined) continue;
+      if (!seen(e) && !seen({ x: e.x2, y: e.y2 })) continue;
       const age = g.time - e.t;
       if (age > 0.25) continue;
       const f = age / 0.25;
@@ -346,6 +382,7 @@ export class Renderer {
     for (const e of g.events) {
       const age = g.time - e.t;
       const p = this.w2s(e);
+      if (!seen(e)) continue;
       if (e.kind === 'death') {
         ctx.strokeStyle = `rgba(255,255,255,${0.7 * (1 - age / 1.6)})`;
         ctx.lineWidth = 2;
@@ -454,15 +491,26 @@ export class Renderer {
       ctx.arc(p.x, p.y, r + 5.5, 0, Math.PI * 2);
       ctx.stroke();
     }
-    if (!u.supplied) {
+    if (u.cutTime > 0) {
+      // Supply clock: the yellow arc is the time left to reconnect before the unit dies.
+      const left = Math.max(0, 1 - u.cutTime / CUT_OFF_LIFE);
+      const urgent = left < 0.35;
       ctx.save();
-      ctx.setLineDash([3, 3]);
-      ctx.lineDashOffset = -ui.now * 12;
-      ctx.strokeStyle = '#ffd166';
-      ctx.lineWidth = 1.5;
+      ctx.lineWidth = 2.5;
+      ctx.strokeStyle = 'rgba(0,0,0,0.5)';
       ctx.beginPath();
       ctx.arc(p.x, p.y, r + 8.5, 0, Math.PI * 2);
       ctx.stroke();
+      ctx.strokeStyle = urgent ? (Math.sin(ui.now * 14) > 0 ? '#ff5a5a' : '#ffd166') : u.supplied ? 'rgba(255,209,102,0.5)' : '#ffd166';
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, r + 8.5, -Math.PI / 2, -Math.PI / 2 + left * Math.PI * 2);
+      ctx.stroke();
+      if (!u.supplied && t === 0) {
+        ctx.fillStyle = urgent ? '#ff8a8a' : '#ffd166';
+        ctx.font = `700 ${Math.round(10 + r * 0.35)}px "Chakra Petch", sans-serif`;
+        ctx.textAlign = 'center';
+        ctx.fillText(`${Math.ceil(CUT_OFF_LIFE - u.cutTime)}s`, p.x, p.y + r + 22);
+      }
       ctx.restore();
     }
     if (u.contact) {

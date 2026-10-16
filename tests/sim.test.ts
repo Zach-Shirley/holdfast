@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { aiStep, createAi, distinctRoutes } from '../src/ai';
 import { PLAIN, PRESETS, floodFrom, generateMap, type GameMap } from '../src/map';
 import { findCellPath, findPath } from '../src/path';
-import { applyStrike, createGame, orderMove, step, updateSupply, type Game, type Unit } from '../src/sim';
+import { CUT_OFF_LIFE, VISION, applyStrike, canSee, createGame, orderMove, step, updateSupply, type Game, type Unit } from '../src/sim';
 
 const finder = (m: GameMap, a: { x: number; y: number }, b: { x: number; y: number }) => findCellPath(m, a, b);
 
@@ -118,6 +118,43 @@ describe('combat and supply', () => {
     for (let i = 0; i < 20 * 30 && g.winner === null; i++) step(g, 0.05);
     expect(g.winner).toBe(1);
     expect(g.winReason).toBe('Stronghold captured');
+  });
+});
+
+describe('supply clock, passes and fog', () => {
+  it('a cut-off unit dies after the supply clock runs out, and recovers if reconnected', () => {
+    const g = bareGame(flatMap());
+    const trapped = addUnit(g, 0, 40, 15);
+    const ring = [[2.4, 0], [-2.4, 0], [0, 2.4], [0, -2.4], [1.7, 1.7], [-1.7, 1.7], [1.7, -1.7], [-1.7, -1.7]].map(([dx, dy]) => addUnit(g, 1, 40 + dx, 15 + dy));
+    for (const e of ring) e.hp = e.maxHp = 1e9; // keep the ring intact; only the clock matters here
+    trapped.hp = trapped.maxHp = 1e9;
+    for (let i = 0; i < (CUT_OFF_LIFE - 5) * 20; i++) step(g, 0.05);
+    expect(trapped.alive).toBe(true);
+    expect(trapped.cutTime).toBeGreaterThan(CUT_OFF_LIFE - 6);
+    for (let i = 0; i < 7 * 20; i++) step(g, 0.05);
+    expect(trapped.alive).toBe(false);
+  });
+
+  it('a group of 10 gets through a 2-cell gap without jamming', () => {
+    const m = flatMap();
+    for (let y = 0; y < m.h; y++) if (y < 14 || y > 15) m.terrain[y * m.w + 30] = 4;
+    const g = bareGame(m);
+    addUnit(g, 1, 56, 3); // a distant enemy so the game does not end at once
+    const us = Array.from({ length: 10 }, (_, i) => addUnit(g, 0, 18 + (i % 5) * 1.6, 11 + Math.floor(i / 5) * 4));
+    orderMove(g, us.map((u) => u.id), { x: 44, y: 15 });
+    for (let i = 0; i < 60 * 20; i++) step(g, 0.05);
+    const through = us.filter((u) => u.x > 31).length;
+    expect(through).toBe(10);
+  });
+
+  it('fog hides units beyond vision range', () => {
+    const g = createGame(flatMap(), { armySize: 1, composition: 'melee', fog: true });
+    g.units = [];
+    addUnit(g, 0, 20, 15);
+    expect(canSee(g, 0, { x: 20 + VISION - 1, y: 15 })).toBe(true);
+    expect(canSee(g, 0, { x: 20 + VISION + 2, y: 15 })).toBe(false);
+    g.fog = false;
+    expect(canSee(g, 0, { x: 55, y: 15 })).toBe(true);
   });
 });
 

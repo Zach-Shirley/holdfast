@@ -6,8 +6,8 @@ export type Kind = 'melee' | 'ranged';
 export type Composition = 'mixed' | 'melee' | 'ranged';
 
 export const UNIT_STATS: Record<Kind, { hp: number; dps: number; range: number; meleeDps: number; speed: number }> = {
-  melee: { hp: 100, dps: 5, range: 1.9, meleeDps: 5, speed: 2.6 },
-  ranged: { hp: 70, dps: 3.4, range: 7.5, meleeDps: 2.2, speed: 2.6 },
+  melee: { hp: 100, dps: 3, range: 1.9, meleeDps: 3, speed: 2.6 },
+  ranged: { hp: 70, dps: 2.1, range: 7.5, meleeDps: 1.4, speed: 2.6 },
 };
 
 /** Centre-to-centre distance at which two units are in melee contact. */
@@ -17,19 +17,25 @@ export const ZOC = 3.6;
 export const ZOC_SLOW = 0.5;
 export const CONTACT_SLOW = 0.35;
 /** Cells within this radius of an enemy unit block supply. */
-export const SUPPLY_BLOCK = 2.6;
+export const SUPPLY_BLOCK = 2.1;
+/** A unit's own body keeps the ground under and around it connected. */
+export const SUPPLY_HOLD = 1.5;
 /** A unit is supplied when a supplied cell lies within this radius. */
-export const SUPPLY_REACH = 3.2;
+export const SUPPLY_REACH = 3.4;
 export const HQ_RADIUS = 3.4;
 export const HQ_HEAL_RADIUS = 9;
 export const CAPTURE_TIME = 12;
 /** The stronghold's own garrison shoots the nearest attacker on or near its grounds. */
-export const GARRISON_DPS = 4;
+export const GARRISON_DPS = 2.5;
 export const GARRISON_RANGE = HQ_RADIUS + 1.5;
 export const STRIKE_CD = 12;
 export const RALLY_CD = 14;
 export const STRIKE_DURATION = 8;
 const SEPARATION = 1.5;
+/** Seconds a unit survives without a supply line back to its stronghold. */
+export const CUT_OFF_LIFE = 20;
+/** How far each unit (and the stronghold) sees when fog of war is on. */
+export const VISION = 10;
 
 export interface Unit {
   id: number;
@@ -51,6 +57,11 @@ export interface Unit {
   lastHitAt: number;
   shotCd: number;
   stall: number;
+  /** Where the last move order was headed, for re-pathing when stuck. */
+  goal: Pt | null;
+  repaths: number;
+  /** Seconds spent cut off; the unit dies at CUT_OFF_LIFE. */
+  cutTime: number;
   alive: boolean;
 }
 
@@ -88,11 +99,13 @@ export interface Game {
   garrisonCd: [number, number];
   events: GameEvent[];
   stats: [TeamStats, TeamStats];
+  fog: boolean;
 }
 
 export interface GameOptions {
   armySize: number;
   composition: Composition;
+  fog?: boolean;
 }
 
 const emptyStats = (): TeamStats => ({ minigames: 0, perfect: 0, good: 0, miss: 0, healed: 0, lost: 0 });
@@ -119,6 +132,9 @@ function makeUnit(id: number, team: Team, kind: Kind, p: Pt): Unit {
     lastHitAt: -99,
     shotCd: 0,
     stall: 0,
+    goal: null,
+    repaths: 0,
+    cutTime: 0,
     alive: true,
   };
 }
@@ -170,6 +186,7 @@ export function createGame(map: GameMap, opts: GameOptions): Game {
     garrisonCd: [0, 0],
     events: [],
     stats: [emptyStats(), emptyStats()],
+    fog: !!opts.fog,
   };
   const n = opts.armySize;
   const ranged = opts.composition === 'ranged' ? n : opts.composition === 'melee' ? 0 : Math.round(n * 0.4);
@@ -190,6 +207,14 @@ export const getUnit = (g: Game, id: number) => g.units.find((u) => u.id === id 
 export const dist = (a: Pt, b: Pt) => Math.hypot(a.x - b.x, a.y - b.y);
 export const isBuffed = (g: Game, u: Unit) => u.buffUntil > g.time;
 
+/** Whether `team` can currently see point p (always true without fog). */
+export function canSee(g: Game, team: Team, p: Pt): boolean {
+  if (!g.fog) return true;
+  if (dist(p, g.map.hq[team]) <= VISION) return true;
+  for (const u of g.units) if (u.alive && u.team === team && dist(u, p) <= VISION) return true;
+  return false;
+}
+
 export function updateSupply(g: Game) {
   const m = g.map;
   for (const team of [0, 1] as Team[]) {
@@ -207,6 +232,20 @@ export function updateSupply(g: Game) {
           // The stronghold always supplies its own grounds.
           if (Math.hypot(cx + 0.5 - hq.x, cy + 0.5 - hq.y) < HQ_RADIUS) continue;
           blocked[cy * m.w + cx] = 1;
+        }
+      }
+    }
+    // Friendly bodies hold their own ground, so a line of units fighting at the front stays
+    // connected; only a unit whose surroundings are actually taken gets cut off.
+    const hr = Math.ceil(SUPPLY_HOLD);
+    for (const f of g.units) {
+      if (!f.alive || f.team !== team) continue;
+      for (let dy = -hr; dy <= hr; dy++) {
+        for (let dx = -hr; dx <= hr; dx++) {
+          const cx = Math.floor(f.x) + dx;
+          const cy = Math.floor(f.y) + dy;
+          if (cx < 0 || cy < 0 || cx >= m.w || cy >= m.h) continue;
+          if (Math.hypot(cx + 0.5 - f.x, cy + 0.5 - f.y) <= SUPPLY_HOLD) blocked[cy * m.w + cx] = 0;
         }
       }
     }
@@ -264,7 +303,9 @@ export function orderMove(g: Game, ids: number[], target: Pt) {
       const raw = { x: target.x + px * col * spacing - dx * row * spacing, y: target.y + py * col * spacing - dy * row * spacing };
       const slot = n === 1 ? target : nearestPassable(g.map, raw.x, raw.y) ?? target;
       u.path = findPath(g.map, u, slot) ?? findPath(g.map, u, target) ?? [];
+      u.goal = u.path.length ? u.path[u.path.length - 1] : null;
       u.stall = 0;
+      u.repaths = 0;
     });
   }
 }
@@ -389,15 +430,18 @@ export function step(g: Game, dt: number) {
   }
   for (const [id, d] of dmg) byId.get(id)!.hp -= d;
 
-  // 3. Recovery: supplied units out of combat heal, faster near the stronghold. Cut-off units wither.
+  // 3. Supply clock and recovery. Cut off: the clock runs and the unit dies at CUT_OFF_LIFE;
+  // reconnecting winds it back twice as fast. Supplied units out of combat heal.
   for (const u of alive) {
-    if (dmg.has(u.id) || u.targetId !== null || g.time - u.lastHitAt < 3) continue;
     if (!u.supplied) {
-      u.hp -= 0.6 * dt;
+      u.cutTime += dt;
+      if (u.cutTime >= CUT_OFF_LIFE) u.hp = 0;
       continue;
     }
+    u.cutTime = Math.max(0, u.cutTime - dt * 2);
+    if (dmg.has(u.id) || u.targetId !== null || g.time - u.lastHitAt < 3) continue;
     const nearHq = dist(u, m.hq[u.team]) < HQ_HEAL_RADIUS;
-    u.hp = Math.min(u.maxHp, u.hp + (nearHq ? 5 : 1.2) * dt);
+    u.hp = Math.min(u.maxHp, u.hp + (nearHq ? 4 : 0.8) * dt);
   }
 
   for (const u of alive) {

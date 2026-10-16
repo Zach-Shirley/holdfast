@@ -5,6 +5,7 @@ import {
   applyRally,
   applyStrike,
   beginMinigame,
+  canSee,
   canRally,
   canStrike,
   dist,
@@ -19,9 +20,9 @@ export type Difficulty = 'easy' | 'normal' | 'hard';
 
 /** How often the AI "plays" a mini-game and how well. It has one pair of hands, like the player. */
 export const AI_SKILL: Record<Difficulty, { microEvery: number; perfect: number; good: number; think: number }> = {
-  easy: { microEvery: 6.0, perfect: 0.15, good: 0.4, think: 2.4 },
-  normal: { microEvery: 3.6, perfect: 0.3, good: 0.45, think: 1.6 },
-  hard: { microEvery: 2.4, perfect: 0.45, good: 0.4, think: 1.0 },
+  easy: { microEvery: 6.0, perfect: 0.2, good: 0.5, think: 2.4 },
+  normal: { microEvery: 3.6, perfect: 0.35, good: 0.5, think: 1.6 },
+  hard: { microEvery: 2.4, perfect: 0.5, good: 0.42, think: 1.0 },
 };
 
 interface Group {
@@ -111,7 +112,8 @@ function think(g: Game, ai: AiState) {
   const team = ai.team;
   const hq = m.hq[team];
   const enemyHq = m.hq[1 - team];
-  const enemies = g.units.filter((u) => u.alive && u.team !== team);
+  // Under fog of war the AI only reacts to what its own units can see.
+  const enemies = g.units.filter((u) => u.alive && u.team !== team && canSee(g, team, u));
 
   // Home defence: pull in extra units when the stronghold is threatened.
   ai.defenders = ai.defenders.filter((id) => getUnit(g, id));
@@ -151,13 +153,16 @@ function think(g: Game, ai: AiState) {
 
   // Field groups advance along their routes, regroup, retreat to heal, then assault.
   ai.groups = ai.groups.filter((gr) => gr.ids.some((id) => getUnit(g, id)));
-  // Every field group is gone: send all but one home guard out again, so the AI never just turtles.
-  if (!ai.groups.length && !threats.length && ai.defenders.length >= 1) {
+  // The field force has dwindled: fold the home guard and the stragglers into one attack group,
+  // so the AI never just turtles and trickles single units into a defended stronghold.
+  const fieldCount = ai.groups.reduce((s, gr) => s + gr.ids.length, 0);
+  if (fieldCount < 3 && !threats.length && ai.defenders.length >= 1) {
     const routes = distinctRoutes(g, hq, enemyHq, 2);
-    const keep = ai.defenders.length > 2 && enemies.length > ai.defenders.length ? 1 : 0;
-    const out = ai.defenders.slice(keep);
+    const total = fieldCount + ai.defenders.length;
+    const keep = total > 4 ? 1 : 0;
+    const ids = [...ai.groups.flatMap((gr) => gr.ids), ...ai.defenders.slice(keep)];
     ai.defenders = ai.defenders.slice(0, keep);
-    ai.groups.push({ ids: out, route: routes[Math.floor(ai.rng() * routes.length)] ?? [hq, enemyHq], wp: 1, mode: 'advance', lastTarget: null, cautious: false });
+    ai.groups = [{ ids, route: routes[Math.floor(ai.rng() * routes.length)] ?? [hq, enemyHq], wp: 1, mode: 'advance', lastTarget: null, cautious: false }];
   }
   // A large push toward home pulls every field group back to meet it.
   const push = enemies.filter((e) => dist(e, hq) < 60);
@@ -193,7 +198,10 @@ function think(g: Game, ai: AiState) {
     const ownHp = units.reduce((s, u) => s + u.hp, 0);
 
     if (gr.mode !== 'assault' && dist(c, enemyHq) < 16 && localHp < ownHp * 1.2) gr.mode = 'assault';
-    if (gr.mode !== 'retreat' && (hpFrac < 0.35 || localHp > ownHp * (gr.cautious ? 1.2 : 1.7))) gr.mode = 'retreat';
+    // With three or fewer units left there is nothing to regroup for: all in.
+    const allIn = g.units.filter((u) => u.alive && u.team === team).length <= 3;
+    if (allIn && gr.mode === 'retreat') gr.mode = 'advance';
+    if (!allIn && gr.mode !== 'retreat' && (hpFrac < 0.35 || localHp > ownHp * (gr.cautious ? 1.2 : 1.7))) gr.mode = 'retreat';
     if (gr.mode === 'retreat' && hpFrac > 0.8) {
       gr.mode = 'advance';
       let bi = 0;

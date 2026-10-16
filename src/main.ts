@@ -28,9 +28,10 @@ interface Settings {
   armySize: number;
   composition: Composition;
   difficulty: Difficulty;
+  fog: 'on' | 'off';
 }
 
-const settings: Settings = { preset: 'passes', seed: randomSeed(), armySize: 20, composition: 'mixed', difficulty: 'normal' };
+const settings: Settings = { preset: 'passes', seed: randomSeed(), armySize: 20, composition: 'mixed', difficulty: 'normal', fog: 'on' };
 
 function randomSeed() {
   return Math.floor(Math.random() * 99999) + 1;
@@ -82,6 +83,8 @@ app.innerHTML = `
           <button data-v="12">12</button><button data-v="20">20</button><button data-v="28">28</button></div></div>
         <div class="opt"><h3>AI</h3><div class="seg" data-key="difficulty">
           <button data-v="easy">Easy</button><button data-v="normal">Normal</button><button data-v="hard">Hard</button></div></div>
+        <div class="opt"><h3>Fog of war</h3><div class="seg" data-key="fog">
+          <button data-v="on">On</button><button data-v="off">Off</button></div></div>
       </div>
       <div class="actions"><button class="primary" id="start">Start battle</button><button id="setup-help">How to play</button></div>
     </div>
@@ -106,11 +109,11 @@ app.innerHTML = `
         </div>
         <div>
           <h3>Mini-game boosts</h3>
-          <p><span class="ic strike"></span><b>Strike</b> (units in combat): stop the needle in the zone. +35% damage, or +70% on the bright centre, for 8s. Hotkey <b>Q</b>.</p>
-          <p><span class="ic rally"></span><b>Rally</b> (wounded units): type the arrows. Up to +30% health. Hotkey <b>E</b>.</p>
-          <p>Click a badge above a unit to start one. The battle does <i>not</i> pause while you play.</p>
+          <p><span class="ic strike"></span><b>Strike</b> (units in combat): click while the needle is in the zone. +35% damage, or +70% on the bright centre, for 8s.</p>
+          <p><span class="ic rally"></span><b>Rally</b> (wounded units): click the three pulses before they fade. +10% health each.</p>
+          <p>Click the badge above a unit to start one (or Q / E for the selected unit that needs it most). The mini-game covers the battlefield and the battle does <i>not</i> pause: while you play it, you are not watching your army.</p>
           <h3>Fighting</h3>
-          <p>Several units on one target hit much harder (flanking). Units slow down near enemies, so gaps are hard to slip through. Units with enemies on all sides are <b>cut off</b> (yellow ring): no healing and weaker. Forests and hills protect.</p>
+          <p>Several units on one target hit much harder (flanking). Units slow down near enemies, so gaps are hard to slip through. Every unit needs a clear line back to your stronghold. A unit that is <b>cut off</b> gets a yellow clock: reconnect within 20 seconds or it dies. Forests and hills protect. With fog of war on, you only see near your own units.</p>
         </div>
       </div>
       <div class="actions"><button class="primary" id="help-close">Got it</button></div>
@@ -212,7 +215,7 @@ function refreshSetup(regen = true) {
 
 function startGame() {
   if (!map) map = generateMap(settings.seed, settings.preset, finder);
-  game = createGame(map, { armySize: settings.armySize, composition: settings.composition });
+  game = createGame(map, { armySize: settings.armySize, composition: settings.composition, fog: settings.fog === 'on' });
   ai = createAi(game, 1, settings.difficulty, settings.seed);
   renderer.setMap(map);
   onResize();
@@ -468,7 +471,7 @@ function updateHud(g: Game) {
     alert.className = 'alert';
   } else alert.className = 'alert hidden';
   for (const e of g.events) {
-    if (e.kind === 'cut' && e.team === 0 && g.time - e.t < 0.05) toast('A unit is cut off: no healing until supply is restored', 'cut', 6);
+    if (e.kind === 'cut' && e.team === 0 && g.time - e.t < 0.05) toast('A unit is cut off: 20 seconds to reconnect it', 'cut', 6);
   }
   const sel = $('sel');
   const us = [...selected].map((id) => getUnit(g, id)).filter((u) => !!u);
@@ -548,6 +551,7 @@ requestAnimationFrame(frame);
     return badges;
   },
   renderer,
+  mg,
   settings,
   launchMinigame,
   advance(seconds: number) {
