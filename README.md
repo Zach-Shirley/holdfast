@@ -1,57 +1,66 @@
 # Holdfast
 
-A small real-time territory game inspired by the War of Dots genre (original name, art and maps). Two armies of dots on a generated landmass. Each side defends **one stronghold**. The twist: any unit in combat or wounded can be boosted with a 2–3 second mini-game, and the battle **does not pause** while you play it. The skill is boosting fast without losing sight of the rest of the map.
+A small real-time strategy game about **where to spend your attention**. Two realms fight over 6–10 strongholds joined by roads. You send troops as columns; when armies meet, a **battle** starts. Left alone, numbers decide it. Step inside and mouse-driven quick-time events swing the fight. But the battle view hides the map, and you can only be in one battle at a time. The enemy commander has the same limit, and its flag shows where it is.
 
-Status: v0.2 (2026-10-16), single player vs AI, desktop browser. v0.2 adds fog of war, slower fights, a 20 s supply clock, mouse-only centred mini-games and pass-jam fixes after Zach's first playtest.
+Status: v0.3 (2026-10-18), a complete rebuild ("node battles") after Zach found v0.2 not fun. Single player vs AI, desktop browser. The v0.1/v0.2 dots game is in git history (`865fe5c`).
 
 ## Run
 
 ```bash
 npm install
 npm run dev     # http://127.0.0.1:5360
-npm test        # simulation tests, incl. AI-vs-AI matches
+npm test        # map, battle and AI tests incl. AI-vs-AI wars
 npm run build
 ```
 
 ## How it plays
 
-- **Win:** stand inside the enemy stronghold ring with no defenders inside for 12 s, or destroy their army. The stronghold's garrison shoots the nearest attacker.
-- **Units:** melee (sturdy, must touch) and ranged (fragile, 7.5-cell range, weak in melee). Setup lets you pick Mixed, All melee or All ranged so each can be compared.
-- **Flanking:** each extra attacker on the same target adds +25% damage (up to +75%).
-- **Zone of control:** units move at half speed within 3.6 cells of an enemy. Slipping through a gap is slow and draws fire, so you don't need an unbroken line.
-- **Encirclement / supply:** every unit needs a clear line back to its stronghold. Supply floods out from the stronghold; it is blocked near enemy units, and a unit's own body keeps its ground connected. A cut-off unit gets a yellow clock and dies after **20 s** unless reconnected (the clock winds back twice as fast once reconnected). Cut-off units also deal −20% and take +20% damage. Press **V** to see your supply area.
-- **Fog of war** (setup option, on by default): you only see 10 cells around your units and stronghold. The AI plays under the same fog.
-- **Terrain:** mountains and water block movement. Forest (−38% speed, −25% damage taken) and hills (−25% speed, −15% damage taken).
-- **Maps:** four generated types (Mountain Passes, Lake Country, Highlands, Open Steppe) from a seed. Every map is point-symmetric, so both sides get the same ground.
-- **Mini-games (mouse only):** they take over the middle of the screen and hide the battle, which keeps running. *Strike*: click while the needle is in the zone (30% wide; the bright 10% centre is a perfect hit). +35% or +70% damage for 8 s, 12 s cooldown. *Rally*: click three pulses before they fade, +10% health each, 14 s cooldown. Starting one commits the cooldown. The AI gets the same boosts on a timer, one at a time, with a success rate set by difficulty.
-
-Controls: left-click/drag to select, right-click to move in formation, click a unit's badge to boost it. Optional keys: A selects all, X stops, Ctrl+1–9 / 1–9 for groups, Q/E boosts the selected unit that needs it most, wheel zooms, middle-drag/arrows pan, C recenters, P pauses, H opens help.
+- **Strongholds:** capital (grows 1.0/s, cap 70, walls ×1.5), fort (0.35/s, cap 60, walls ×1.4), village (0.75/s, cap 50, no walls). Troops above a cap slowly desert. Maps are point-symmetric, so both sides are equal.
+- **Moving troops:** drag from your stronghold to any other. The dock sets 25/50/75/100%. Columns follow the roads and pass through your own strongholds. Two enemy columns meeting on a road fight there.
+- **Battles:** each side loses `(0.6 + 0.045 × enemy troops) × enemy momentum × enemy walls` troops per second. An even fight lasts about 10–30 s. Reinforcements arriving at a battle join it.
+- **Battle view** (click the crossed swords or a battle in the dock): full screen, and the war keeps running. Quick-time events come one after another, mouse only:
+  - **Volley:** click the target as the closing ring meets it. Kills about 7% of the enemy.
+  - **Parry:** click the incoming spear before it reaches your shield. A miss costs you about 7%.
+  - **Slash:** drag from the start mark to the ring along the line. +0.3 momentum.
+  - **Banner:** hold the mouse on the moving banner for 1 s. Kills about 4% and +0.15 momentum.
+  - Leave with Esc, right-click or the button, or jump straight to another battle from the side list.
+- **Enemy commander:** the AI plays the same quick-time events, one battle at a time, with a switching delay and a success rate set by difficulty (easy 55%, normal 70%, hard 82%). It deliberately attacks where your commander is not.
+- **Winning:** take the enemy capital. A 12-minute war clock breaks deadlocks: at zero, whoever holds more strongholds wins, with total troops as the tiebreak.
 
 ## Code map
 
 | File | Role |
 | --- | --- |
-| `src/map.ts` | Seeded symmetric map generator, terrain tables, flood fill |
-| `src/path.ts` | A* on the terrain grid plus path smoothing |
-| `src/sim.ts` | Units, combat, flanking, zone of control, supply, healing, capture |
-| `src/ai.ts` | AI commander: main army + flank group, home defence, mini-game timer |
-| `src/minigames.ts` | Strike and Rally panels |
-| `src/render.ts` | Canvas renderer: painted terrain, units, badges, effects |
-| `src/main.ts` | Setup/end screens, input, HUD, game loop |
+| `src/map.ts` | Seeded symmetric stronghold/road graph (6–10 nodes, planar roads, names) |
+| `src/sim.ts` | Garrisons, columns, road interceptions, battle maths, quick-time effects, war clock |
+| `src/ai.ts` | AI strategy (defend, attack, muster, push forward) and AI commander attention |
+| `src/battleview.ts` | Full-screen battle scene and the four quick-time events |
+| `src/render.ts` | Map renderer: painted backdrop, roads, strongholds, columns, battle markers |
+| `src/main.ts` | Setup/end screens, map input, dock, HUD, game loop |
 
-## Verification (2026-10-16)
+## Verification (2026-10-18)
 
-- `npm test`: 19 passing. Covers map connectivity and symmetry on all presets, determinism, pathfinding, flanking damage, encirclement detection, the strike buff, stronghold capture, the 20 s supply clock, a 10-unit group clearing a 2-cell gap, fog visibility, AI-vs-AI matches finishing on all four map types, and a guard that Normal AI beats a no-micro deathball on at least 3 of 8 maps.
-- Driven in the browser: setup screen, map previews, battle start, formation moves, combat, both mini-games through real key events (buff, heal and cooldowns confirmed), badge click hit-test, and the end screen with stats. No console errors.
-- Not yet verified: a human playtest for feel and pacing. A real-mouse click on a moving badge wasn't confirmed because the automated browser pane was hidden; the same hit-test passed with dispatched mouse events.
+- `npm test`: 20 passing. Covers:
+  - map generation for every size (connected, symmetric, capitals at least 3 roads apart) and determinism
+  - garrison growth and caps, capture, battle length, wall bonus and road interception
+  - quick-time successes flipping a losing fight
+  - AI-vs-AI wars finishing on all sizes and difficulties
+  - a 20-map sweep with no stalemates (15 of 20 end by capture before the clock; median about 6 minutes)
+  - **a commander who plays quick-time events beats one who never does in 12 of 12 games**
+- Browser checks:
+  - setup and map preview, a real mouse drag sending a column
+  - Volley, Parry and Slash each completed with real mouse clicks and drags
+  - Banner completed with dispatched mouse events (the automation can't hold a button down)
+  - map battle markers with the enemy-commander flag, dock battle list, toasts, end screen and the war clock
+  - no console errors
+- Not yet verified: a human playtest for fun, pacing and difficulty.
 
 ## Known limitations
 
-- **Blobbing is strong.** Under these rules, one concentrated army often beats a split one (it wins 5 of 8 test maps against Normal AI with zero mini-games). This is the main design question for the next version.
-- Matches run about 1–5 minutes, which is short.
-- No fog of war, no rivers, no online multiplayer.
+- The AI is decent, not clever. It reads only the nodes next to its territory and sometimes wins on the clock instead of finishing a capital.
+- No sound, no fog of war, no multiplayer.
 - `window.__holdfast` exposes a debug hook for automated browser checks.
 
 ## Authorship
 
-Directed by Zach Shirley (concept: troops plus speed mini-games under real-time pressure, a single stronghold, no economy, no single continuous front, encirclement). Design details, code, tests and tuning were produced by Claude (Anthropic) in a Claude Code session, with Zach to review and playtest.
+Directed by Zach Shirley: a real-time strategy game whose fights are swung by quick-time events, the node-battles direction, 6–10 strongholds, mouse-only events, no reuse of the old healing game, and the feedback that drove the rebuild. Design details, code, tests and tuning were produced by Claude (Anthropic) in a Claude Code session.
