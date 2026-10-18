@@ -1,307 +1,201 @@
-import { fbm, makeNoise, mulberry32, type Rng } from './rng';
+import { mulberry32, type Rng } from './rng';
 
-export const WATER = 0;
-export const PLAIN = 1;
-export const FOREST = 2;
-export const HILL = 3;
-export const MOUNTAIN = 4;
+export type NodeKind = 'capital' | 'fort' | 'village';
 
-/** Movement speed multiplier per terrain (0 = impassable). */
-export const SPEED = [0, 1, 0.62, 0.75, 0];
-/** Damage-taken multiplier for a unit standing on this terrain. */
-export const DEFENSE = [1, 1, 0.75, 0.85, 1];
-export const TERRAIN_NAME = ['Water', 'Plains', 'Forest', 'Hills', 'Mountains'];
-
-export interface Pt {
+export interface MapNode {
+  id: number;
   x: number;
   y: number;
-}
-
-export interface GameMap {
-  w: number;
-  h: number;
-  terrain: Uint8Array;
-  elev: Float32Array;
-  /** Stronghold positions (cell centers) for team 0 and team 1. */
-  hq: [Pt, Pt];
-  seed: number;
-  preset: string;
-}
-
-export interface MapPreset {
-  id: string;
+  kind: NodeKind;
   name: string;
-  desc: string;
-  /** Mountain ridges per half, each broken by passes. */
-  ridges: number;
-  passes: [number, number];
-  mountain: number;
-  forest: number;
-  /** Inland lake threshold (0 = no lakes). */
-  lake: number;
 }
 
-export const PRESETS: MapPreset[] = [
-  {
-    id: 'passes',
-    name: 'Mountain Passes',
-    desc: 'Ridges split the land into lanes joined by narrow passes.',
-    ridges: 2,
-    passes: [2, 3],
-    mountain: 0.74,
-    forest: 0.6,
-    lake: 0,
-  },
-  {
-    id: 'lakes',
-    name: 'Lake Country',
-    desc: 'Scattered lakes and woods, many crooked routes.',
-    ridges: 0,
-    passes: [2, 3],
-    mountain: 0.8,
-    forest: 0.57,
-    lake: 0.36,
-  },
-  {
-    id: 'highlands',
-    name: 'Highlands',
-    desc: 'Broken mountain blocks with one long ridge and hills everywhere.',
-    ridges: 1,
-    passes: [3, 3],
-    mountain: 0.71,
-    forest: 0.62,
-    lake: 0,
-  },
-  {
-    id: 'open',
-    name: 'Open Steppe',
-    desc: 'Few obstacles. Control test: shows the continuous-front problem.',
-    ridges: 0,
-    passes: [2, 2],
-    mountain: 0.86,
-    forest: 0.64,
-    lake: 0,
-  },
-];
-
-export const MAP_W = 128;
-export const MAP_H = 80;
-
-export function idx(m: GameMap, x: number, y: number): number {
-  return y * m.w + x;
+export interface Edge {
+  a: number;
+  b: number;
+  len: number;
 }
 
-export function inBounds(m: GameMap, x: number, y: number): boolean {
-  return x >= 0 && y >= 0 && x < m.w && y < m.h;
+export interface GraphMap {
+  nodes: MapNode[];
+  edges: Edge[];
+  /** adj[n] lists neighbouring node ids. */
+  adj: number[][];
+  /** mirror[n] is the node opposite n under the map's point symmetry. */
+  mirror: number[];
+  capitals: [number, number];
+  seed: number;
 }
 
-export function terrainAt(m: GameMap, x: number, y: number): number {
-  const cx = Math.floor(x);
-  const cy = Math.floor(y);
-  if (!inBounds(m, cx, cy)) return WATER;
-  return m.terrain[cy * m.w + cx];
+export const WORLD_W = 1600;
+export const WORLD_H = 900;
+
+export const NODE_STATS: Record<NodeKind, { growth: number; cap: number; defense: number; label: string }> = {
+  capital: { growth: 1.0, cap: 70, defense: 1.5, label: 'Capital' },
+  fort: { growth: 0.35, cap: 60, defense: 1.4, label: 'Fort' },
+  village: { growth: 0.75, cap: 50, defense: 1.0, label: 'Village' },
+};
+
+const MIN_NODE_GAP = 200;
+const MAX_EDGE = 520;
+const EDGE_CLEARANCE = 60;
+const MAX_DEGREE = 4;
+
+const SYL_A = ['Ash', 'Bram', 'Cor', 'Dun', 'Eld', 'Fen', 'Gar', 'Hal', 'Iron', 'Kel', 'Lor', 'Mar', 'Nor', 'Os', 'Red', 'Stone', 'Thorn', 'Vel', 'Wex', 'Yar'];
+const SYL_B = ['ford', 'hold', 'wick', 'mere', 'gate', 'moor', 'crest', 'fall', 'haven', 'reach', 'watch', 'stead', 'vale', 'barrow', 'march'];
+
+export function edgeBetween(m: GraphMap, a: number, b: number): Edge | undefined {
+  return m.edges.find((e) => (e.a === a && e.b === b) || (e.a === b && e.b === a));
 }
 
-export function passableCell(m: GameMap, cx: number, cy: number): boolean {
-  return inBounds(m, cx, cy) && SPEED[m.terrain[cy * m.w + cx]] > 0;
+function cross(ax: number, ay: number, bx: number, by: number, cx: number, cy: number) {
+  return (bx - ax) * (cy - ay) - (by - ay) * (cx - ax);
 }
 
-export function passableAt(m: GameMap, x: number, y: number): boolean {
-  return passableCell(m, Math.floor(x), Math.floor(y));
+/** Proper intersection of segments p1-p2 and p3-p4 (shared endpoints do not count). */
+function segmentsCross(p1: MapNode, p2: MapNode, p3: MapNode, p4: MapNode): boolean {
+  if (p1 === p3 || p1 === p4 || p2 === p3 || p2 === p4) return false;
+  const d1 = cross(p3.x, p3.y, p4.x, p4.y, p1.x, p1.y);
+  const d2 = cross(p3.x, p3.y, p4.x, p4.y, p2.x, p2.y);
+  const d3 = cross(p1.x, p1.y, p2.x, p2.y, p3.x, p3.y);
+  const d4 = cross(p1.x, p1.y, p2.x, p2.y, p4.x, p4.y);
+  return d1 * d2 < 0 && d3 * d4 < 0;
 }
 
-/** Nearest passable cell center to (x, y), searching outward in rings. */
-export function nearestPassable(m: GameMap, x: number, y: number): Pt | null {
-  const cx = Math.floor(x);
-  const cy = Math.floor(y);
-  if (passableCell(m, cx, cy)) return { x: cx + 0.5, y: cy + 0.5 };
-  for (let r = 1; r < 20; r++) {
-    let best: Pt | null = null;
-    let bestD = Infinity;
-    for (let dy = -r; dy <= r; dy++) {
-      for (let dx = -r; dx <= r; dx++) {
-        if (Math.max(Math.abs(dx), Math.abs(dy)) !== r) continue;
-        if (!passableCell(m, cx + dx, cy + dy)) continue;
-        const d = dx * dx + dy * dy;
-        if (d < bestD) {
-          bestD = d;
-          best = { x: cx + dx + 0.5, y: cy + dy + 0.5 };
-        }
-      }
-    }
-    if (best) return best;
-  }
-  return null;
+function pointSegDist(px: number, py: number, a: MapNode, b: MapNode) {
+  const dx = b.x - a.x;
+  const dy = b.y - a.y;
+  const t = Math.max(0, Math.min(1, ((px - a.x) * dx + (py - a.y) * dy) / (dx * dx + dy * dy)));
+  return Math.hypot(px - (a.x + dx * t), py - (a.y + dy * t));
 }
 
-/** Flood fill over passable cells; returns reached mask. `blocked` cells are skipped. */
-export function floodFrom(m: GameMap, start: Pt, blocked?: Uint8Array): Uint8Array {
-  const seen = new Uint8Array(m.w * m.h);
-  const sx = Math.floor(start.x);
-  const sy = Math.floor(start.y);
-  if (!passableCell(m, sx, sy)) return seen;
-  if (blocked && blocked[sy * m.w + sx]) return seen;
-  const queue = new Int32Array(m.w * m.h);
-  let head = 0;
-  let tail = 0;
-  queue[tail++] = sy * m.w + sx;
-  seen[sy * m.w + sx] = 1;
-  while (head < tail) {
-    const i = queue[head++];
-    const x = i % m.w;
-    const y = (i - x) / m.w;
-    for (let dy = -1; dy <= 1; dy++) {
-      for (let dx = -1; dx <= 1; dx++) {
-        if (!dx && !dy) continue;
-        const nx = x + dx;
-        const ny = y + dy;
-        if (!passableCell(m, nx, ny)) continue;
-        // No diagonal squeezing between two impassable cells.
-        if (dx && dy && (!passableCell(m, x + dx, y) || !passableCell(m, x, y + dy))) continue;
-        const ni = ny * m.w + nx;
-        if (seen[ni] || (blocked && blocked[ni])) continue;
-        seen[ni] = 1;
-        queue[tail++] = ni;
+function makeNames(rng: Rng, n: number): string[] {
+  const out = new Set<string>();
+  while (out.size < n) out.add(SYL_A[Math.floor(rng() * SYL_A.length)] + SYL_B[Math.floor(rng() * SYL_B.length)]);
+  return [...out];
+}
+
+/** Shortest number of road hops between two nodes. */
+export function hops(m: GraphMap, from: number, to: number): number {
+  const dist = new Array(m.nodes.length).fill(-1);
+  dist[from] = 0;
+  const q = [from];
+  while (q.length) {
+    const n = q.shift()!;
+    for (const k of m.adj[n]) {
+      if (dist[k] < 0) {
+        dist[k] = dist[n] + 1;
+        q.push(k);
       }
     }
   }
-  return seen;
+  return dist[to];
 }
 
-/** Write a cell and its point-mirror so both halves stay identical. */
-function setSym(t: Uint8Array, w: number, h: number, x: number, y: number, v: number) {
-  if (x < 0 || y < 0 || x >= w || y >= h) return;
-  t[y * w + x] = v;
-  t[(h - 1 - y) * w + (w - 1 - x)] = v;
-}
-
-function carveRidges(t: Uint8Array, elev: Float32Array, w: number, h: number, preset: MapPreset, rng: Rng) {
-  const wobble = makeNoise(rng);
-  for (let r = 0; r < preset.ridges; r++) {
-    const frac = preset.ridges === 1 ? 0.3 : 0.22 + (0.16 * r) / (preset.ridges - 1);
-    const x0 = w * frac;
-    const tilt = (rng() - 0.5) * 0.5;
-    const nPasses = preset.passes[0] + Math.floor(rng() * (preset.passes[1] - preset.passes[0] + 1));
-    // Spread passes along the ridge so no two are adjacent.
-    const passes: [number, number][] = [];
-    for (let p = 0; p < nPasses; p++) {
-      const band = (h - 10) / nPasses;
-      const center = 5 + band * p + band * (0.25 + rng() * 0.5);
-      const half = 1.8 + rng() * 1.4;
-      passes.push([center - half, center + half]);
-    }
-    const off = rng() * 100;
-    for (let y = 0; y < h; y++) {
-      const cx = x0 + (y - h / 2) * tilt + (wobble(y * 0.07, off) - 0.5) * 12;
-      const thick = 1.4 + wobble(y * 0.15, off + 50) * 2.2;
-      const inPass = passes.some(([a, b]) => y >= a && y <= b);
-      for (let x = Math.floor(cx - thick - 3); x <= Math.ceil(cx + thick + 3); x++) {
-        if (x < 0 || x >= w) continue;
-        const i = y * w + x;
-        const d = Math.abs(x + 0.5 - cx);
-        // Raise the elevation around the ridge so the hillshade shows it as a range.
-        const bump = Math.max(0, 1 - d / (thick + 3)) * 0.25;
-        elev[i] = Math.min(1, elev[i] + bump);
-        elev[(h - 1 - y) * w + (w - 1 - x)] = elev[i];
-        if (t[i] === WATER) continue;
-        if (inPass) {
-          if (t[i] === MOUNTAIN && d < thick + 3) setSym(t, w, h, x, y, HILL);
-        } else if (d <= thick) setSym(t, w, h, x, y, MOUNTAIN);
-        else if (d <= thick + 1.5 && t[i] !== MOUNTAIN) setSym(t, w, h, x, y, HILL);
-      }
-    }
-  }
-}
-
-function buildCandidate(seed: number, preset: MapPreset): GameMap {
-  const w = MAP_W;
-  const h = MAP_H;
+function tryBuild(seed: number, count: number): GraphMap | null {
   const rng = mulberry32(seed);
-  const elevN = makeNoise(rng);
-  const forestN = makeNoise(rng);
-  const coastN = makeNoise(rng);
-  const lakeN = makeNoise(rng);
-  const t = new Uint8Array(w * h);
-  const elev = new Float32Array(w * h);
-  // Average each noise field with its point-mirror: symmetric and seamless.
-  const sym = (f: (x: number, y: number) => number, x: number, y: number) => (f(x, y) + f(w - 1 - x, h - 1 - y)) / 2;
-  const stretch = (v: number, k: number) => Math.max(0, Math.min(1, (v - 0.5) * k + 0.5));
+  const W = WORLD_W;
+  const H = WORLD_H;
+  const mirrorPt = (p: { x: number; y: number }) => ({ x: W - p.x, y: H - p.y });
+  const nodes: MapNode[] = [];
+  const mirror: number[] = [];
+  const add = (x: number, y: number, kind: NodeKind) => {
+    nodes.push({ id: nodes.length, x, y, kind, name: '' });
+    return nodes.length - 1;
+  };
+  const pair = (x: number, y: number, kind: NodeKind) => {
+    const a = add(x, y, kind);
+    const m = mirrorPt({ x, y });
+    const b = add(m.x, m.y, kind);
+    mirror[a] = b;
+    mirror[b] = a;
+  };
 
-  for (let y = 0; y < h; y++) {
-    for (let x = 0; x < w; x++) {
-      const i = y * w + x;
-      const e = stretch(sym((a, b) => fbm(elevN, (a / w) * 5, (b / h) * 3.2, 4), x, y), 2.6);
-      elev[i] = e;
-      const dx = Math.abs((x + 0.5) / w - 0.5) * 2;
-      const dy = Math.abs((y + 0.5) / h - 0.5) * 2;
-      const d = Math.cbrt(dx ** 3 + dy ** 3);
-      const coast = sym((a, b) => fbm(coastN, (a / w) * 6, (b / h) * 4, 3), x, y);
-      if (d > 0.93 - (coast - 0.5) * 0.4) {
-        t[i] = WATER;
-        continue;
-      }
-      if (preset.lake > 0 && stretch(sym((a, b) => fbm(lakeN, (a / w) * 7, (b / h) * 4.5, 3), x, y), 2.2) < preset.lake - 0.12) {
-        t[i] = WATER;
-        continue;
-      }
-      const f = stretch(sym((a, b) => fbm(forestN, (a / w) * 9, (b / h) * 6, 3), x, y), 2.2);
-      if (e > preset.mountain) t[i] = MOUNTAIN;
-      else if (e > preset.mountain - 0.1) t[i] = HILL;
-      else if (f > preset.forest) t[i] = FOREST;
-      else t[i] = PLAIN;
+  // Capitals face each other across the map.
+  pair(150 + rng() * 40, H / 2 + (rng() - 0.5) * 260, 'capital');
+  const hasCenter = (count - 2) % 2 === 1;
+  if (hasCenter) {
+    const c = add(W / 2, H / 2, 'fort');
+    mirror[c] = c;
+  }
+  const pairs = Math.floor((count - 2) / 2);
+  const kinds: NodeKind[] = [];
+  for (let i = 0; i < pairs; i++) kinds.push(i === 0 ? 'village' : i === 1 ? 'fort' : rng() < 0.55 ? 'village' : 'fort');
+  for (const kind of kinds) {
+    let placed = false;
+    for (let attempt = 0; attempt < 400 && !placed; attempt++) {
+      const x = 320 + rng() * 460;
+      const y = 100 + rng() * (H - 200);
+      const m = mirrorPt({ x, y });
+      if (Math.hypot(x - m.x, y - m.y) < MIN_NODE_GAP) continue;
+      if (nodes.some((n) => Math.hypot(n.x - x, n.y - y) < MIN_NODE_GAP || Math.hypot(n.x - m.x, n.y - m.y) < MIN_NODE_GAP)) continue;
+      pair(x, y, kind);
+      placed = true;
     }
+    if (!placed) return null;
   }
 
-  carveRidges(t, elev, w, h, preset, rng);
-
-  // Stronghold for team 0 on the west side, mirrored for team 1; clear ground around both.
-  const hq0: Pt = { x: 12.5, y: Math.floor(h / 2 + (rng() - 0.5) * h * 0.35) + 0.5 };
-  for (let dy = -7; dy <= 7; dy++) {
-    for (let dx = -7; dx <= 7; dx++) {
-      const x = Math.floor(hq0.x) + dx;
-      const y = Math.floor(hq0.y) + dy;
-      if (x < 0 || y < 0 || x >= w || y >= h) continue;
-      const d = Math.hypot(dx, dy);
-      const cur = t[y * w + x];
-      if (d <= 4) setSym(t, w, h, x, y, PLAIN);
-      else if (d <= 7 && (cur === WATER || cur === MOUNTAIN)) setSym(t, w, h, x, y, HILL);
+  // Roads: shortest candidates first, added in mirrored pairs, never crossing and never
+  // brushing past another node, never linking the two capitals directly.
+  const edges: Edge[] = [];
+  const deg = new Array(nodes.length).fill(0);
+  const has = (a: number, b: number) => edges.some((e) => (e.a === a && e.b === b) || (e.a === b && e.b === a));
+  const cands: Edge[] = [];
+  for (let i = 0; i < nodes.length; i++) {
+    for (let j = i + 1; j < nodes.length; j++) {
+      cands.push({ a: i, b: j, len: Math.hypot(nodes[i].x - nodes[j].x, nodes[i].y - nodes[j].y) });
     }
   }
-  const hq1: Pt = { x: w - hq0.x, y: h - hq0.y };
-  return { w, h, terrain: t, elev, hq: [hq0, hq1], seed, preset: preset.id };
+  cands.sort((p, q) => p.len - q.len);
+  const caps = [0, 1];
+  const ok = (e: Edge, others: Edge[]) => {
+    if (e.len > MAX_EDGE) return false;
+    if (caps.includes(e.a) && caps.includes(e.b)) return false;
+    if (deg[e.a] >= MAX_DEGREE || deg[e.b] >= MAX_DEGREE) return false;
+    for (const n of nodes) {
+      if (n.id === e.a || n.id === e.b) continue;
+      if (pointSegDist(n.x, n.y, nodes[e.a], nodes[e.b]) < EDGE_CLEARANCE) return false;
+    }
+    return !others.some((o) => segmentsCross(nodes[e.a], nodes[e.b], nodes[o.a], nodes[o.b]));
+  };
+  for (const e of cands) {
+    if (has(e.a, e.b)) continue;
+    const me: Edge = { a: mirror[e.a], b: mirror[e.b], len: e.len };
+    const same = (me.a === e.a && me.b === e.b) || (me.a === e.b && me.b === e.a);
+    if (!ok(e, edges)) continue;
+    if (!same && (!ok(me, edges) || segmentsCross(nodes[e.a], nodes[e.b], nodes[me.a], nodes[me.b]))) continue;
+    edges.push(e);
+    deg[e.a]++;
+    deg[e.b]++;
+    if (!same) {
+      edges.push(me);
+      deg[me.a]++;
+      deg[me.b]++;
+    }
+  }
+  const adj: number[][] = nodes.map(() => []);
+  for (const e of edges) {
+    adj[e.a].push(e.b);
+    adj[e.b].push(e.a);
+  }
+  const names = makeNames(rng, nodes.length);
+  nodes.forEach((n, i) => (n.name = names[i]));
+  const m: GraphMap = { nodes, edges, adj, mirror, capitals: [0, 1], seed };
+  // Every node reachable, every node has a choice of roads, and the capitals are not next door.
+  if (nodes.some((n) => hops(m, 0, n.id) < 0)) return null;
+  if (nodes.some((n) => adj[n.id].length < 2)) return null;
+  if (hops(m, 0, 1) < 3) return null;
+  return m;
 }
 
-
-/** True when the strongholds connect by at least two routes that are not within 3 cells of each other. */
-export function hasTwoRoutes(m: GameMap, route: Pt[]): boolean {
-  const blocked = new Uint8Array(m.w * m.h);
-  for (const p of route) {
-    for (let dy = -3; dy <= 3; dy++) {
-      for (let dx = -3; dx <= 3; dx++) {
-        const x = Math.floor(p.x) + dx;
-        const y = Math.floor(p.y) + dy;
-        if (!inBounds(m, x, y)) continue;
-        if (Math.hypot(x + 0.5 - m.hq[0].x, y + 0.5 - m.hq[0].y) < 10) continue;
-        if (Math.hypot(x + 0.5 - m.hq[1].x, y + 0.5 - m.hq[1].y) < 10) continue;
-        blocked[y * m.w + x] = 1;
-      }
+export function generateMap(seed: number, count: number): GraphMap {
+  const n = Math.max(6, Math.min(10, Math.round(count)));
+  for (let attempt = 0; attempt < 200; attempt++) {
+    const m = tryBuild(seed * 7 + attempt * 104729, n);
+    if (m) {
+      m.seed = seed;
+      return m;
     }
   }
-  const seen = floodFrom(m, m.hq[0], blocked);
-  return !!seen[idx(m, Math.floor(m.hq[1].x), Math.floor(m.hq[1].y))];
-}
-
-export function generateMap(seed: number, presetId: string, routeFinder: (m: GameMap, a: Pt, b: Pt) => Pt[] | null): GameMap {
-  const preset = PRESETS.find((p) => p.id === presetId) ?? PRESETS[0];
-  let fallback: GameMap | null = null;
-  for (let attempt = 0; attempt < 30; attempt++) {
-    const m = buildCandidate(seed + attempt * 7919, preset);
-    m.seed = seed;
-    const route = routeFinder(m, m.hq[0], m.hq[1]);
-    if (!route) continue;
-    fallback ??= m;
-    if (hasTwoRoutes(m, route)) return m;
-  }
-  if (fallback) return fallback;
-  throw new Error(`Could not generate a connected map for seed ${seed}`);
+  throw new Error(`Could not generate a ${n}-node map for seed ${seed}`);
 }

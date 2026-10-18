@@ -1,147 +1,60 @@
-import { FOREST, HILL, MOUNTAIN, PLAIN, WATER, type GameMap, type Pt } from './map';
-import { makeNoise, mulberry32 } from './rng';
-import { CAPTURE_TIME, CUT_OFF_LIFE, HQ_RADIUS, VISION, canRally, canSee, canStrike, isBuffed, type Game, type Unit } from './sim';
+import { NODE_STATS, WORLD_H, WORLD_W, type GraphMap, type MapNode } from './map';
+import { fbm, makeNoise, mulberry32 } from './rng';
+import { activeBattles, columnPos, type Battle, type Game, type Owner } from './sim';
 
-export const TEAM_COLOR = ['#e2364d', '#4aa3d8'];
-const TEAM_DARK = ['#5c1220', '#123a55'];
-const TEAM_LIGHT = ['#ff8a98', '#a8dcff'];
+export const OWNER_COLOR: Record<Owner, string> = { 0: '#e2364d', 1: '#4aa3d8', 2: '#a89a7c' };
+export const OWNER_LIGHT: Record<Owner, string> = { 0: '#ff8a98', 1: '#a8dcff', 2: '#d8ccb0' };
+export const OWNER_DARK: Record<Owner, string> = { 0: '#3d0d16', 1: '#0f2a3d', 2: '#2b261c' };
 
-const PX = 6; // terrain texture pixels per cell
+export function nodeRadius(n: MapNode) {
+  return n.kind === 'capital' ? 44 : n.kind === 'fort' ? 38 : 33;
+}
 
-type RGB = [number, number, number];
-const BASE: Record<number, RGB> = {
-  [WATER]: [12, 19, 33],
-  [PLAIN]: [44, 50, 36],
-  [FOREST]: [24, 40, 28],
-  [HILL]: [62, 57, 42],
-  [MOUNTAIN]: [92, 88, 82],
-};
-
-/** Paint the terrain once into an offscreen canvas. Edges are jittered with noise so they read as land, not tiles. */
-export function renderTerrain(m: GameMap): HTMLCanvasElement {
+/** Painted, dark map backdrop at world resolution. */
+export function paintBackground(m: GraphMap): HTMLCanvasElement {
   const c = document.createElement('canvas');
-  c.width = m.w * PX;
-  c.height = m.h * PX;
+  const S = 0.5; // paint at half resolution; scaling up softens it nicely
+  c.width = WORLD_W * S;
+  c.height = WORLD_H * S;
   const ctx = c.getContext('2d')!;
   const img = ctx.createImageData(c.width, c.height);
-  const rng = mulberry32(m.seed ^ 0x9e3779b9);
-  const jx = makeNoise(rng);
-  const jy = makeNoise(rng);
-  const grain = makeNoise(rng);
-  const tAt = (x: number, y: number) => {
-    const cx = Math.min(m.w - 1, Math.max(0, Math.floor(x)));
-    const cy = Math.min(m.h - 1, Math.max(0, Math.floor(y)));
-    return m.terrain[cy * m.w + cx];
-  };
-  const eAt = (x: number, y: number) => {
-    const cx = Math.min(m.w - 1, Math.max(0, Math.floor(x)));
-    const cy = Math.min(m.h - 1, Math.max(0, Math.floor(y)));
-    return m.elev[cy * m.w + cx];
-  };
-  // Distance-to-land approximation for shallow water.
-  const nearLand = new Uint8Array(m.w * m.h);
-  for (let y = 0; y < m.h; y++) {
-    for (let x = 0; x < m.w; x++) {
-      if (m.terrain[y * m.w + x] !== WATER) continue;
-      let best = 9;
-      for (let dy = -3; dy <= 3; dy++) {
-        for (let dx = -3; dx <= 3; dx++) {
-          if (tAt(x + dx, y + dy) !== WATER) best = Math.min(best, Math.max(Math.abs(dx), Math.abs(dy)));
-        }
-      }
-      nearLand[y * m.w + x] = best;
-    }
-  }
-  for (let py = 0; py < c.height; py++) {
-    for (let px = 0; px < c.width; px++) {
-      const wx = px / PX;
-      const wy = py / PX;
-      const sx = wx + (jx(wx * 0.9, wy * 0.9) - 0.5) * 0.9;
-      const sy = wy + (jy(wx * 0.9, wy * 0.9) - 0.5) * 0.9;
-      const t = tAt(sx, sy);
-      let [r, g, b] = BASE[t];
-      const gr = grain(wx * 3, wy * 3) - 0.5;
-      if (t === WATER) {
-        const nl = nearLand[Math.floor(sy) * m.w + Math.floor(sx)] ?? 9;
-        const shallow = Math.max(0, 1 - (nl - 1) / 3);
-        r += 10 * shallow;
-        g += 22 * shallow;
-        b += 34 * shallow;
-        r += gr * 6;
-        g += gr * 8;
-        b += gr * 12;
-      } else {
-        // Hillshade from the elevation field (light from the north-west).
-        const e = eAt(sx, sy);
-        const shade = (e - eAt(sx - 1, sy - 1)) * 160;
-        const k = 1 + Math.max(-0.35, Math.min(0.35, shade * 0.02)) + gr * 0.12;
-        r *= k;
-        g *= k;
-        b *= k;
-        if (t === MOUNTAIN && e > 0.8) {
-          r += 30;
-          g += 30;
-          b += 30;
-        }
-        if (t === FOREST) {
-          // Canopy speckle.
-          const s = grain(wx * 11, wy * 11);
-          if (s > 0.62) {
-            r *= 0.7;
-            g *= 0.75;
-            b *= 0.7;
-          }
-        }
-        if (t === HILL) {
-          const s = grain(wx * 2.2 + 40, wy * 2.2);
-          const band = Math.abs(((s * 8) % 1) - 0.5) < 0.06 ? 1.12 : 1;
-          r *= band;
-          g *= band;
-          b *= band;
-        }
-        // Light coastline rim.
-        if (tAt(sx + 0.5, sy) === WATER || tAt(sx - 0.5, sy) === WATER || tAt(sx, sy + 0.5) === WATER || tAt(sx, sy - 0.5) === WATER) {
-          r += 22;
-          g += 22;
-          b += 18;
-        }
-      }
-      const i = (py * c.width + px) * 4;
-      img.data[i] = r;
-      img.data[i + 1] = g;
-      img.data[i + 2] = b;
+  const rng = mulberry32(m.seed ^ 0xbeef);
+  const n1 = makeNoise(rng);
+  const n2 = makeNoise(rng);
+  for (let y = 0; y < c.height; y++) {
+    for (let x = 0; x < c.width; x++) {
+      const wx = x / c.width;
+      const wy = y / c.height;
+      const e = fbm(n1, wx * 6, wy * 3.4, 5);
+      const f = fbm(n2, wx * 14, wy * 8, 3);
+      // Contour lines on the elevation field.
+      const contour = Math.abs(((e * 14) % 1) - 0.5) < 0.04 ? 9 : 0;
+      const i = (y * c.width + x) * 4;
+      img.data[i] = 22 + e * 26 + f * 8 + contour;
+      img.data[i + 1] = 22 + e * 22 + f * 10 + contour * 0.8;
+      img.data[i + 2] = 20 + e * 14 + f * 6 + contour * 0.6;
       img.data[i + 3] = 255;
     }
   }
   ctx.putImageData(img, 0, 0);
+  const v = ctx.createRadialGradient(c.width / 2, c.height / 2, c.height * 0.3, c.width / 2, c.height / 2, c.width * 0.62);
+  v.addColorStop(0, 'rgba(0,0,0,0)');
+  v.addColorStop(1, 'rgba(0,0,0,0.6)');
+  ctx.fillStyle = v;
+  ctx.fillRect(0, 0, c.width, c.height);
   return c;
 }
 
-export interface Badge {
-  x: number;
-  y: number;
-  r: number;
-  unitId: number;
-  kind: 'strike' | 'rally';
-}
-
-export interface UiState {
-  selected: Set<number>;
-  box: { x0: number; y0: number; x1: number; y1: number } | null;
-  showSupply: boolean;
-  activeUnit: number | null;
-  marks: { x: number; y: number; t: number }[];
+export interface MapUi {
+  hover: number | null;
+  drag: { from: number; x: number; y: number; target: number | null; amount: number } | null;
   now: number;
 }
 
-export class Renderer {
+export class MapRenderer {
   readonly ctx: CanvasRenderingContext2D;
-  private terrain: HTMLCanvasElement | null = null;
-  private map: GameMap | null = null;
-  private supplyCanvas: HTMLCanvasElement | null = null;
-  private supplySrc: Uint8Array | null = null;
-  private fogCanvas: HTMLCanvasElement | null = null;
-  scale = 10;
+  private bg: HTMLCanvasElement | null = null;
+  scale = 1;
   ox = 0;
   oy = 0;
   width = 0;
@@ -152,13 +65,11 @@ export class Renderer {
     this.ctx = canvas.getContext('2d')!;
   }
 
-  setMap(m: GameMap) {
-    this.map = m;
-    this.terrain = renderTerrain(m);
-    this.supplySrc = null;
+  setMap(m: GraphMap) {
+    this.bg = paintBackground(m);
   }
 
-  resize(w: number, h: number) {
+  resize(w: number, h: number, top = 70, bottom = 84) {
     this.dpr = Math.min(2, window.devicePixelRatio || 1);
     this.width = w;
     this.height = h;
@@ -166,388 +77,332 @@ export class Renderer {
     this.canvas.height = Math.round(h * this.dpr);
     this.canvas.style.width = `${w}px`;
     this.canvas.style.height = `${h}px`;
+    const pad = 24;
+    this.scale = Math.min((w - pad * 2) / WORLD_W, (h - top - bottom - pad) / WORLD_H);
+    this.ox = (w - WORLD_W * this.scale) / 2;
+    this.oy = top + (h - top - bottom - WORLD_H * this.scale) / 2;
   }
 
-  /** Fit the whole map in view, leaving room for the HUD bars. */
-  fit(top = 64, bottom = 24) {
-    if (!this.map) return;
-    const pad = 20;
-    const s = Math.min((this.width - pad * 2) / this.map.w, (this.height - top - bottom - pad) / this.map.h);
-    this.scale = s;
-    this.ox = (this.width - this.map.w * s) / 2;
-    this.oy = top + (this.height - top - bottom - this.map.h * s) / 2;
+  w2s(x: number, y: number) {
+    return { x: x * this.scale + this.ox, y: y * this.scale + this.oy };
   }
 
-  w2s(p: Pt): Pt {
-    return { x: p.x * this.scale + this.ox, y: p.y * this.scale + this.oy };
-  }
-
-  s2w(x: number, y: number): Pt {
+  s2w(x: number, y: number) {
     return { x: (x - this.ox) / this.scale, y: (y - this.oy) / this.scale };
   }
 
-  zoomAt(sx: number, sy: number, factor: number) {
-    const before = this.s2w(sx, sy);
-    this.scale = Math.max(4, Math.min(40, this.scale * factor));
-    this.ox = sx - before.x * this.scale;
-    this.oy = sy - before.y * this.scale;
+  nodeAt(g: Game, sx: number, sy: number): number | null {
+    const w = this.s2w(sx, sy);
+    for (const n of g.map.nodes) if (Math.hypot(n.x - w.x, n.y - w.y) <= nodeRadius(n) + 10) return n.id;
+    return null;
   }
 
-  pan(dx: number, dy: number) {
-    this.ox += dx;
-    this.oy += dy;
-  }
-
-  private supplyLayer(mask: Uint8Array): HTMLCanvasElement {
-    const m = this.map!;
-    if (this.supplyCanvas && this.supplySrc === mask) return this.supplyCanvas;
-    const c = this.supplyCanvas ?? document.createElement('canvas');
-    c.width = m.w;
-    c.height = m.h;
-    const ctx = c.getContext('2d')!;
-    const img = ctx.createImageData(m.w, m.h);
-    for (let i = 0; i < mask.length; i++) {
-      if (!mask[i]) continue;
-      img.data[i * 4] = 226;
-      img.data[i * 4 + 1] = 54;
-      img.data[i * 4 + 2] = 77;
-      img.data[i * 4 + 3] = 46;
+  /** Battle marker hit test (road battles, and the swords badge above node battles). */
+  battleAt(g: Game, sx: number, sy: number): number | null {
+    const w = this.s2w(sx, sy);
+    for (const b of activeBattles(g)) {
+      const p = this.markerPos(g, b);
+      if (Math.hypot(p.x - w.x, p.y - w.y) <= 42) return b.id;
     }
-    ctx.putImageData(img, 0, 0);
-    this.supplyCanvas = c;
-    this.supplySrc = mask;
-    return c;
+    return null;
   }
 
-  /** Low-resolution fog mask, scaled up so vision edges come out soft. */
-  private fogLayer(g: Game): HTMLCanvasElement {
-    const m = g.map;
-    const k = 3;
-    const c = this.fogCanvas ?? document.createElement('canvas');
-    c.width = m.w * k;
-    c.height = m.h * k;
-    const ctx = c.getContext('2d')!;
-    ctx.globalCompositeOperation = 'source-over';
-    ctx.clearRect(0, 0, c.width, c.height);
-    ctx.fillStyle = 'rgba(3,4,8,0.74)';
-    ctx.fillRect(0, 0, c.width, c.height);
-    ctx.globalCompositeOperation = 'destination-out';
-    const eyes = [m.hq[0], ...g.units.filter((u) => u.alive && u.team === 0)];
-    for (const e of eyes) {
-      const grad = ctx.createRadialGradient(e.x * k, e.y * k, VISION * k * 0.75, e.x * k, e.y * k, VISION * k);
-      grad.addColorStop(0, 'rgba(0,0,0,1)');
-      grad.addColorStop(1, 'rgba(0,0,0,0)');
-      ctx.fillStyle = grad;
-      ctx.beginPath();
-      ctx.arc(e.x * k, e.y * k, VISION * k, 0, Math.PI * 2);
-      ctx.fill();
-    }
-    ctx.globalCompositeOperation = 'source-over';
-    this.fogCanvas = c;
-    return c;
+  private markerPos(g: Game, b: Battle) {
+    if (b.nodeId === null) return { x: b.x, y: b.y };
+    const n = g.map.nodes[b.nodeId];
+    return { x: n.x, y: n.y - nodeRadius(n) - 44 };
   }
 
-  draw(g: Game, ui: UiState): Badge[] {
+  draw(g: Game, ui: MapUi) {
     const { ctx } = this;
     const m = g.map;
-    const s = this.scale;
     ctx.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
-    ctx.fillStyle = '#07080c';
+    ctx.fillStyle = '#060608';
     ctx.fillRect(0, 0, this.width, this.height);
-
-    // Terrain, then optional supply tint.
-    if (this.terrain) {
+    ctx.setTransform(this.dpr * this.scale, 0, 0, this.dpr * this.scale, this.dpr * this.ox, this.dpr * this.oy);
+    if (this.bg) {
       ctx.imageSmoothingEnabled = true;
-      ctx.drawImage(this.terrain, this.ox, this.oy, m.w * s, m.h * s);
-    }
-    if (ui.showSupply) {
-      ctx.imageSmoothingEnabled = true;
-      ctx.drawImage(this.supplyLayer(g.supply[0]), this.ox, this.oy, m.w * s, m.h * s);
+      ctx.drawImage(this.bg, 0, 0, WORLD_W, WORLD_H);
     }
 
-    if (g.fog) {
-      ctx.imageSmoothingEnabled = true;
-      ctx.drawImage(this.fogLayer(g), this.ox, this.oy, m.w * s, m.h * s);
-    }
-    const seen = (p: { x: number; y: number }) => canSee(g, 0, p);
-
-    // Strongholds (their location is always known).
-    for (const team of [0, 1] as const) {
-      const p = this.w2s(m.hq[team]);
-      const r = HQ_RADIUS * s;
-      ctx.save();
-      ctx.setLineDash([4, 5]);
-      ctx.strokeStyle = TEAM_COLOR[team] + '88';
-      ctx.lineWidth = 1.5;
-      ctx.beginPath();
-      ctx.arc(p.x, p.y, r, 0, Math.PI * 2);
-      ctx.stroke();
-      ctx.restore();
-      const prog = g.capture[team] / CAPTURE_TIME;
-      if (prog > 0) {
-        ctx.strokeStyle = TEAM_COLOR[1 - team];
-        ctx.lineWidth = 4;
-        ctx.beginPath();
-        ctx.arc(p.x, p.y, r + 4, -Math.PI / 2, -Math.PI / 2 + prog * Math.PI * 2);
-        ctx.stroke();
-      }
-      const k = Math.max(8, s * 1.5);
-      ctx.fillStyle = TEAM_DARK[team];
-      ctx.strokeStyle = TEAM_COLOR[team];
-      ctx.lineWidth = 2;
-      ctx.beginPath();
-      for (let i = 0; i < 6; i++) {
-        const a = Math.PI / 6 + (i * Math.PI) / 3;
-        const x = p.x + Math.cos(a) * k;
-        const y = p.y + Math.sin(a) * k;
-        if (i) ctx.lineTo(x, y);
-        else ctx.moveTo(x, y);
-      }
-      ctx.closePath();
-      ctx.fill();
-      ctx.stroke();
-      ctx.fillStyle = TEAM_LIGHT[team];
-      ctx.beginPath();
-      ctx.arc(p.x, p.y, k * 0.35, 0, Math.PI * 2);
-      ctx.fill();
-    }
-
-    const living = g.units.filter((u) => u.alive && (u.team === 0 || seen(u)));
-    // Planned paths of selected units.
-    ctx.save();
-    ctx.setLineDash([3, 4]);
-    ctx.lineWidth = 1;
-    ctx.strokeStyle = 'rgba(255,220,225,0.35)';
-    for (const u of living) {
-      if (!ui.selected.has(u.id) || !u.path.length) continue;
-      const a = this.w2s(u);
-      ctx.beginPath();
-      ctx.moveTo(a.x, a.y);
-      for (const p of u.path) {
-        const q = this.w2s(p);
-        ctx.lineTo(q.x, q.y);
-      }
-      ctx.stroke();
-    }
-    ctx.restore();
-
-    // Move markers.
-    for (const mk of ui.marks) {
-      const age = ui.now - mk.t;
-      if (age > 0.6) continue;
-      const p = this.w2s(mk);
-      ctx.strokeStyle = `rgba(255,140,155,${1 - age / 0.6})`;
-      ctx.lineWidth = 1.5;
-      ctx.beginPath();
-      ctx.arc(p.x, p.y, 4 + age * 18, 0, Math.PI * 2);
-      ctx.stroke();
-    }
-
-    // Ranged tracers.
-    for (const e of g.events) {
-      if (e.kind !== 'shot' || e.x2 === undefined || e.y2 === undefined) continue;
-      if (!seen(e) && !seen({ x: e.x2, y: e.y2 })) continue;
-      const age = g.time - e.t;
-      if (age > 0.25) continue;
-      const f = age / 0.25;
-      const a = this.w2s({ x: e.x + (e.x2 - e.x) * f, y: e.y + (e.y2 - e.y) * f });
-      const b = this.w2s({ x: e.x + (e.x2 - e.x) * Math.min(1, f + 0.25), y: e.y + (e.y2 - e.y) * Math.min(1, f + 0.25) });
-      ctx.strokeStyle = TEAM_LIGHT[e.team];
-      ctx.lineWidth = 1.5;
+    // Roads.
+    for (const e of m.edges) {
+      const a = m.nodes[e.a];
+      const b = m.nodes[e.b];
+      ctx.lineCap = 'round';
+      ctx.strokeStyle = 'rgba(0,0,0,0.55)';
+      ctx.lineWidth = 14;
       ctx.beginPath();
       ctx.moveTo(a.x, a.y);
       ctx.lineTo(b.x, b.y);
       ctx.stroke();
-    }
-
-    const badges: Badge[] = [];
-    const r = Math.max(5, s * 0.78);
-    for (const u of living) this.drawUnit(g, u, r, ui);
-    for (const u of living) {
-      if (u.team !== 0) continue;
-      const p = this.w2s(u);
-      const br = Math.max(6, r * 0.62);
-      // One badge per unit keeps crowded fights clickable: rally when badly hurt, otherwise strike.
-      const strike = canStrike(g, u);
-      const rally = canRally(g, u);
-      const kind = rally && (!strike || u.hp < u.maxHp * 0.6) ? 'rally' : strike ? 'strike' : null;
-      if (kind) {
-        const b: Badge = { x: p.x + r * 0.8, y: p.y - r * 1.15, r: br, unitId: u.id, kind };
-        this.drawBadge(b, ui.now);
-        badges.push(b);
-      }
-    }
-
-    // One-shot effects.
-    for (const e of g.events) {
-      const age = g.time - e.t;
-      const p = this.w2s(e);
-      if (!seen(e)) continue;
-      if (e.kind === 'death') {
-        ctx.strokeStyle = `rgba(255,255,255,${0.7 * (1 - age / 1.6)})`;
-        ctx.lineWidth = 2;
-        ctx.beginPath();
-        ctx.arc(p.x, p.y, r + age * 20, 0, Math.PI * 2);
-        ctx.stroke();
-      } else if (e.kind === 'strike' && age < 0.8) {
-        ctx.strokeStyle = `rgba(255,170,60,${1 - age / 0.8})`;
-        ctx.lineWidth = 3;
-        ctx.beginPath();
-        ctx.arc(p.x, p.y, r + age * 26, 0, Math.PI * 2);
-        ctx.stroke();
-      } else if (e.kind === 'rally' && age < 1.2) {
-        ctx.fillStyle = `rgba(120,240,160,${1 - age / 1.2})`;
-        ctx.font = `700 ${Math.round(11 + r * 0.4)}px "Chakra Petch", sans-serif`;
-        ctx.textAlign = 'center';
-        ctx.fillText(`+${Math.round(e.value ?? 0)}`, p.x, p.y - r - 10 - age * 18);
-      }
-    }
-
-    if (ui.box) {
-      const { x0, y0, x1, y1 } = ui.box;
-      ctx.fillStyle = 'rgba(226,54,77,0.08)';
-      ctx.strokeStyle = 'rgba(255,138,152,0.8)';
-      ctx.lineWidth = 1;
-      ctx.fillRect(Math.min(x0, x1), Math.min(y0, y1), Math.abs(x1 - x0), Math.abs(y1 - y0));
-      ctx.strokeRect(Math.min(x0, x1) + 0.5, Math.min(y0, y1) + 0.5, Math.abs(x1 - x0), Math.abs(y1 - y0));
-    }
-
-    // Vignette.
-    const v = ctx.createRadialGradient(this.width / 2, this.height / 2, Math.min(this.width, this.height) * 0.35, this.width / 2, this.height / 2, Math.max(this.width, this.height) * 0.75);
-    v.addColorStop(0, 'rgba(0,0,0,0)');
-    v.addColorStop(1, 'rgba(0,0,0,0.55)');
-    ctx.fillStyle = v;
-    ctx.fillRect(0, 0, this.width, this.height);
-    return badges;
-  }
-
-  private drawUnit(g: Game, u: Unit, r: number, ui: UiState) {
-    const { ctx } = this;
-    const p = this.w2s(u);
-    const t = u.team;
-    if (isBuffed(g, u)) {
-      const glow = ctx.createRadialGradient(p.x, p.y, r * 0.5, p.x, p.y, r * 2.1);
-      glow.addColorStop(0, 'rgba(255,160,60,0.55)');
-      glow.addColorStop(1, 'rgba(255,160,60,0)');
-      ctx.fillStyle = glow;
-      ctx.beginPath();
-      ctx.arc(p.x, p.y, r * 2.1, 0, Math.PI * 2);
-      ctx.fill();
-    }
-    if (ui.activeUnit === u.id) {
-      ctx.strokeStyle = `rgba(255,255,255,${0.5 + 0.5 * Math.sin(ui.now * 10)})`;
-      ctx.lineWidth = 2;
-      ctx.beginPath();
-      ctx.arc(p.x, p.y, r + 7, 0, Math.PI * 2);
+      ctx.strokeStyle = '#3a322b';
+      ctx.lineWidth = 8;
       ctx.stroke();
-    }
-    // Shadow, body.
-    ctx.fillStyle = 'rgba(0,0,0,0.45)';
-    ctx.beginPath();
-    ctx.arc(p.x + 1.5, p.y + 2, r, 0, Math.PI * 2);
-    ctx.fill();
-    const body = ctx.createRadialGradient(p.x - r * 0.35, p.y - r * 0.4, r * 0.1, p.x, p.y, r);
-    body.addColorStop(0, TEAM_LIGHT[t]);
-    body.addColorStop(1, TEAM_COLOR[t]);
-    ctx.fillStyle = body;
-    ctx.beginPath();
-    ctx.arc(p.x, p.y, r, 0, Math.PI * 2);
-    ctx.fill();
-    if (u.kind === 'ranged') {
-      // Ranged: hollow core with a sight dot.
-      ctx.fillStyle = TEAM_DARK[t];
-      ctx.beginPath();
-      ctx.arc(p.x, p.y, r * 0.55, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.fillStyle = TEAM_LIGHT[t];
-      ctx.beginPath();
-      ctx.arc(p.x, p.y, r * 0.18, 0, Math.PI * 2);
-      ctx.fill();
-    } else {
-      // Melee: a blade chevron.
-      ctx.strokeStyle = TEAM_DARK[t];
-      ctx.lineWidth = Math.max(1.5, r * 0.22);
-      ctx.beginPath();
-      ctx.moveTo(p.x - r * 0.4, p.y + r * 0.15);
-      ctx.lineTo(p.x, p.y - r * 0.35);
-      ctx.lineTo(p.x + r * 0.4, p.y + r * 0.15);
-      ctx.stroke();
-    }
-    // Health ring.
-    const f = Math.max(0, u.hp / u.maxHp);
-    ctx.lineWidth = Math.max(2, r * 0.26);
-    ctx.strokeStyle = 'rgba(0,0,0,0.55)';
-    ctx.beginPath();
-    ctx.arc(p.x, p.y, r + 2.5, 0, Math.PI * 2);
-    ctx.stroke();
-    ctx.strokeStyle = f > 0.6 ? '#9ff0b5' : f > 0.3 ? '#ffd166' : '#ff5a5a';
-    ctx.beginPath();
-    ctx.arc(p.x, p.y, r + 2.5, -Math.PI / 2, -Math.PI / 2 + f * Math.PI * 2);
-    ctx.stroke();
-    if (ui.selected.has(u.id)) {
-      ctx.strokeStyle = '#ffffff';
-      ctx.lineWidth = 1.5;
-      ctx.beginPath();
-      ctx.arc(p.x, p.y, r + 5.5, 0, Math.PI * 2);
-      ctx.stroke();
-    }
-    if (u.cutTime > 0) {
-      // Supply clock: the yellow arc is the time left to reconnect before the unit dies.
-      const left = Math.max(0, 1 - u.cutTime / CUT_OFF_LIFE);
-      const urgent = left < 0.35;
       ctx.save();
-      ctx.lineWidth = 2.5;
-      ctx.strokeStyle = 'rgba(0,0,0,0.5)';
-      ctx.beginPath();
-      ctx.arc(p.x, p.y, r + 8.5, 0, Math.PI * 2);
+      ctx.setLineDash([10, 14]);
+      ctx.strokeStyle = 'rgba(220,200,170,0.18)';
+      ctx.lineWidth = 2;
       ctx.stroke();
-      ctx.strokeStyle = urgent ? (Math.sin(ui.now * 14) > 0 ? '#ff5a5a' : '#ffd166') : u.supplied ? 'rgba(255,209,102,0.5)' : '#ffd166';
-      ctx.beginPath();
-      ctx.arc(p.x, p.y, r + 8.5, -Math.PI / 2, -Math.PI / 2 + left * Math.PI * 2);
-      ctx.stroke();
-      if (!u.supplied && t === 0) {
-        ctx.fillStyle = urgent ? '#ff8a8a' : '#ffd166';
-        ctx.font = `700 ${Math.round(10 + r * 0.35)}px "Chakra Petch", sans-serif`;
-        ctx.textAlign = 'center';
-        ctx.fillText(`${Math.ceil(CUT_OFF_LIFE - u.cutTime)}s`, p.x, p.y + r + 22);
-      }
       ctx.restore();
     }
-    if (u.contact) {
-      // Clash sparks.
-      for (let i = 0; i < 2; i++) {
-        const a = ui.now * 7 + u.id * 1.7 + i * 3.1;
-        ctx.fillStyle = 'rgba(255,230,180,0.85)';
-        ctx.fillRect(p.x + Math.cos(a) * r * 1.2 - 1, p.y + Math.sin(a * 1.3) * r * 1.2 - 1, 2, 2);
+
+    // Drag preview.
+    if (ui.drag) {
+      const a = m.nodes[ui.drag.from];
+      const t = ui.drag.target !== null ? m.nodes[ui.drag.target] : null;
+      const to = t ? { x: t.x, y: t.y } : this.s2w(ui.drag.x, ui.drag.y);
+      const ang = Math.atan2(to.y - a.y, to.x - a.x);
+      const end = t ? { x: to.x - Math.cos(ang) * (nodeRadius(t) + 8), y: to.y - Math.sin(ang) * (nodeRadius(t) + 8) } : to;
+      ctx.strokeStyle = 'rgba(255,138,152,0.9)';
+      ctx.lineWidth = 4;
+      ctx.setLineDash([12, 8]);
+      ctx.lineDashOffset = -ui.now * 40;
+      ctx.beginPath();
+      ctx.moveTo(a.x, a.y);
+      ctx.lineTo(end.x, end.y);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.fillStyle = 'rgba(255,138,152,0.95)';
+      ctx.beginPath();
+      ctx.moveTo(end.x, end.y);
+      ctx.lineTo(end.x - Math.cos(ang - 0.45) * 18, end.y - Math.sin(ang - 0.45) * 18);
+      ctx.lineTo(end.x - Math.cos(ang + 0.45) * 18, end.y - Math.sin(ang + 0.45) * 18);
+      ctx.closePath();
+      ctx.fill();
+      this.pill(`${ui.drag.amount}`, (a.x + end.x) / 2, (a.y + end.y) / 2 - 16, 0);
+    }
+
+    // Columns on the march.
+    for (const c of g.columns) {
+      const p = columnPos(g, c);
+      const a = m.nodes[c.from];
+      const b = m.nodes[c.path[0]];
+      const ang = Math.atan2(b.y - a.y, b.x - a.x);
+      const dots = Math.min(9, Math.max(2, Math.ceil(c.troops / 5)));
+      for (let i = 0; i < dots; i++) {
+        const row = Math.floor(i / 3);
+        const col = (i % 3) - 1;
+        const bob = Math.sin(ui.now * 9 + i) * 0.8;
+        const x = p.x - Math.cos(ang) * row * 9 + Math.cos(ang + Math.PI / 2) * col * 8;
+        const y = p.y - Math.sin(ang) * row * 9 + Math.sin(ang + Math.PI / 2) * col * 8 + bob;
+        ctx.fillStyle = OWNER_COLOR[c.owner];
+        ctx.beginPath();
+        ctx.arc(x, y, 4.2, 0, Math.PI * 2);
+        ctx.fill();
       }
+      this.pill(String(Math.floor(c.troops)), p.x, p.y - 22, c.owner);
+    }
+
+    // Nodes.
+    for (const n of m.nodes) this.drawNode(g, n, ui);
+
+    // Battles.
+    for (const b of activeBattles(g)) this.drawBattle(g, b, ui);
+
+    // Event floaters.
+    for (const e of g.events) {
+      if (e.kind === 'battle' || e.kind === 'qte') continue;
+      const age = g.time - e.t;
+      if (age > 3) continue;
+      ctx.globalAlpha = 1 - age / 3;
+      ctx.fillStyle = e.kind === 'lost' ? '#ff8a8a' : e.owner === 0 ? '#ffd27a' : '#cfe8ff';
+      ctx.font = '700 28px "Chakra Petch", sans-serif';
+      ctx.textAlign = 'center';
+      ctx.fillText(e.text, e.x, e.y - 100 - age * 14);
+      ctx.globalAlpha = 1;
     }
   }
 
-  private drawBadge(b: Badge, now: number) {
+  private pill(text: string, x: number, y: number, owner: Owner) {
     const { ctx } = this;
-    const pulse = 1 + 0.08 * Math.sin(now * 6 + b.unitId);
-    const r = b.r * pulse;
-    ctx.fillStyle = b.kind === 'strike' ? '#2a1408' : '#0b2416';
-    ctx.strokeStyle = b.kind === 'strike' ? '#ffa94d' : '#6ee7a0';
+    ctx.font = '700 21px "Chakra Petch", sans-serif';
+    const w = ctx.measureText(text).width + 18;
+    ctx.fillStyle = 'rgba(8,8,10,0.85)';
+    ctx.strokeStyle = OWNER_COLOR[owner];
     ctx.lineWidth = 1.5;
     ctx.beginPath();
-    ctx.arc(b.x, b.y, r, 0, Math.PI * 2);
+    ctx.roundRect(x - w / 2, y - 15, w, 30, 15);
     ctx.fill();
     ctx.stroke();
-    ctx.strokeStyle = b.kind === 'strike' ? '#ffd8a8' : '#b9f6cf';
-    ctx.lineWidth = Math.max(1.5, r * 0.22);
+    ctx.fillStyle = '#fff';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(text, x, y + 1);
+    ctx.textBaseline = 'alphabetic';
+  }
+
+  private nodeShape(n: MapNode, r: number) {
+    const { ctx } = this;
     ctx.beginPath();
-    if (b.kind === 'strike') {
-      ctx.moveTo(b.x - r * 0.45, b.y + r * 0.45);
-      ctx.lineTo(b.x + r * 0.45, b.y - r * 0.45);
-      ctx.moveTo(b.x - r * 0.35, b.y - r * 0.05);
-      ctx.lineTo(b.x + r * 0.05, b.y + r * 0.35);
-    } else {
-      ctx.moveTo(b.x - r * 0.5, b.y);
-      ctx.lineTo(b.x + r * 0.5, b.y);
-      ctx.moveTo(b.x, b.y - r * 0.5);
-      ctx.lineTo(b.x, b.y + r * 0.5);
+    if (n.kind === 'village') {
+      ctx.arc(n.x, n.y, r, 0, Math.PI * 2);
+      return;
     }
+    const sides = n.kind === 'capital' ? 8 : 6;
+    for (let i = 0; i < sides; i++) {
+      const a = (i / sides) * Math.PI * 2 + (n.kind === 'capital' ? Math.PI / 8 : Math.PI / 6);
+      const x = n.x + Math.cos(a) * r;
+      const y = n.y + Math.sin(a) * r;
+      if (i) ctx.lineTo(x, y);
+      else ctx.moveTo(x, y);
+    }
+    ctx.closePath();
+  }
+
+  private drawNode(g: Game, n: MapNode, ui: MapUi) {
+    const { ctx } = this;
+    const st = g.nodes[n.id];
+    const r = nodeRadius(n);
+    const own = st.owner;
+    // Glow.
+    const glow = ctx.createRadialGradient(n.x, n.y, r * 0.6, n.x, n.y, r * 1.9);
+    glow.addColorStop(0, OWNER_COLOR[own] + '55');
+    glow.addColorStop(1, OWNER_COLOR[own] + '00');
+    ctx.fillStyle = glow;
+    ctx.beginPath();
+    ctx.arc(n.x, n.y, r * 1.9, 0, Math.PI * 2);
+    ctx.fill();
+    // Body.
+    this.nodeShape(n, r);
+    ctx.fillStyle = OWNER_DARK[own];
+    ctx.fill();
+    ctx.lineWidth = ui.hover === n.id ? 5 : 3.5;
+    ctx.strokeStyle = ui.hover === n.id ? OWNER_LIGHT[own] : OWNER_COLOR[own];
     ctx.stroke();
+    // Garrison fill arc against the cap.
+    const cap = NODE_STATS[n.kind].cap;
+    ctx.strokeStyle = OWNER_LIGHT[own] + 'aa';
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.arc(n.x, n.y, r + 7, -Math.PI / 2, -Math.PI / 2 + Math.min(1, st.troops / cap) * Math.PI * 2);
+    ctx.stroke();
+    // Kind icon above the number.
+    this.kindIcon(n, OWNER_LIGHT[own]);
+    // Garrison number.
+    ctx.fillStyle = '#fff';
+    ctx.font = `700 ${n.kind === 'capital' ? 32 : 28}px "Chakra Petch", sans-serif`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(st.battleId !== null ? '⚔' : String(Math.floor(st.troops)), n.x, n.y + 6);
+    ctx.textBaseline = 'alphabetic';
+    // Name.
+    ctx.font = '700 20px "Chakra Petch", sans-serif';
+    ctx.fillStyle = 'rgba(241,230,232,0.82)';
+    ctx.fillText(n.name.toUpperCase(), n.x, n.y + r + 30);
+  }
+
+  private kindIcon(n: MapNode, color: string) {
+    const { ctx } = this;
+    const x = n.x;
+    const y = n.y - (n.kind === 'capital' ? 22 : 18);
+    ctx.fillStyle = color;
+    ctx.beginPath();
+    if (n.kind === 'capital') {
+      // Crown.
+      ctx.moveTo(x - 10, y + 4);
+      ctx.lineTo(x - 10, y - 4);
+      ctx.lineTo(x - 5, y);
+      ctx.lineTo(x, y - 6);
+      ctx.lineTo(x + 5, y);
+      ctx.lineTo(x + 10, y - 4);
+      ctx.lineTo(x + 10, y + 4);
+    } else if (n.kind === 'fort') {
+      // Tower with battlements.
+      ctx.moveTo(x - 8, y + 5);
+      ctx.lineTo(x - 8, y - 5);
+      ctx.lineTo(x - 5, y - 5);
+      ctx.lineTo(x - 5, y - 2);
+      ctx.lineTo(x - 1.5, y - 2);
+      ctx.lineTo(x - 1.5, y - 5);
+      ctx.lineTo(x + 1.5, y - 5);
+      ctx.lineTo(x + 1.5, y - 2);
+      ctx.lineTo(x + 5, y - 2);
+      ctx.lineTo(x + 5, y - 5);
+      ctx.lineTo(x + 8, y - 5);
+      ctx.lineTo(x + 8, y + 5);
+    } else {
+      // House.
+      ctx.moveTo(x - 8, y + 5);
+      ctx.lineTo(x - 8, y - 1);
+      ctx.lineTo(x, y - 7);
+      ctx.lineTo(x + 8, y - 1);
+      ctx.lineTo(x + 8, y + 5);
+    }
+    ctx.closePath();
+    ctx.fill();
+  }
+
+  private drawBattle(g: Game, b: Battle, ui: MapUi) {
+    const { ctx } = this;
+    const p = this.markerPos(g, b);
+    const total = b.sides.reduce((t, s) => t + Math.max(0, s.troops), 0) || 1;
+    const pulse = 1 + 0.08 * Math.sin(ui.now * 6 + b.id);
+    const R = 32 * pulse;
+    const halo = ctx.createRadialGradient(p.x, p.y, R * 0.8, p.x, p.y, R * 2);
+    halo.addColorStop(0, 'rgba(255,200,150,0.35)');
+    halo.addColorStop(1, 'rgba(255,200,150,0)');
+    ctx.fillStyle = halo;
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, R * 2, 0, Math.PI * 2);
+    ctx.fill();
+    // Ring split by side strength.
+    let a0 = -Math.PI / 2;
+    for (const s of b.sides) {
+      const frac = Math.max(0, s.troops) / total;
+      ctx.strokeStyle = OWNER_COLOR[s.owner];
+      ctx.lineWidth = 8;
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, R, a0, a0 + frac * Math.PI * 2);
+      ctx.stroke();
+      a0 += frac * Math.PI * 2;
+    }
+    ctx.fillStyle = 'rgba(10,8,10,0.92)';
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, R - 4, 0, Math.PI * 2);
+    ctx.fill();
+    // Crossed swords.
+    ctx.strokeStyle = '#ffe1c2';
+    ctx.lineWidth = 4;
+    ctx.lineCap = 'round';
+    ctx.beginPath();
+    ctx.moveTo(p.x - 12, p.y + 12);
+    ctx.lineTo(p.x + 12, p.y - 12);
+    ctx.moveTo(p.x + 12, p.y + 12);
+    ctx.lineTo(p.x - 12, p.y - 12);
+    ctx.stroke();
+    // Side counts.
+    const parts = b.sides.filter((s) => s.troops > 0.5);
+    // Counts sit beside the marker: yours on the left, the others on the right.
+    const order = [...parts].sort((a, b2) => (a.owner === 0 ? -1 : b2.owner === 0 ? 1 : 0));
+    order.forEach((s, i) => this.pill(String(Math.ceil(s.troops)), p.x + (i === 0 ? -1 : 1) * (R + 34) + (i > 1 ? 56 : 0), p.y, s.owner));
+    // Commanders present.
+    if (g.presence[0] === b.id) this.flag(p.x - 6, p.y - R - 10, 0, 'YOU');
+    if (g.presence[1] === b.id) this.flag(p.x + 6, p.y - R - 10, 1, 'ENEMY CMDR');
+  }
+
+  private flag(x: number, y: number, owner: Owner, text: string) {
+    const { ctx } = this;
+    ctx.strokeStyle = '#ddd';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(x, y + 24);
+    ctx.lineTo(x, y - 20);
+    ctx.stroke();
+    ctx.font = '700 17px "Chakra Petch", sans-serif';
+    const w = ctx.measureText(text).width + 16;
+    const dir = owner === 0 ? -1 : 1;
+    ctx.fillStyle = OWNER_COLOR[owner];
+    ctx.beginPath();
+    ctx.moveTo(x, y - 20);
+    ctx.lineTo(x + dir * w, y - 20);
+    ctx.lineTo(x + dir * (w - 8), y - 8);
+    ctx.lineTo(x + dir * w, y + 4);
+    ctx.lineTo(x, y + 4);
+    ctx.closePath();
+    ctx.fill();
+    ctx.fillStyle = '#fff';
+    ctx.textAlign = owner === 0 ? 'right' : 'left';
+    ctx.fillText(text, x + dir * 6, y - 2);
   }
 }

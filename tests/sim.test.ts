@@ -1,202 +1,168 @@
 import { describe, expect, it } from 'vitest';
-import { aiStep, createAi, distinctRoutes } from '../src/ai';
-import { PLAIN, PRESETS, floodFrom, generateMap, type GameMap } from '../src/map';
-import { findCellPath, findPath } from '../src/path';
-import { CUT_OFF_LIFE, VISION, applyStrike, canSee, createGame, orderMove, step, updateSupply, type Game, type Unit } from '../src/sim';
+import { aiStep, createAi, type Difficulty } from '../src/ai';
+import { WORLD_H, WORLD_W, generateMap, hops } from '../src/map';
+import { applyQte, createGame, getBattle, lossRates, sendTroops, step, type Game } from '../src/sim';
 
-const finder = (m: GameMap, a: { x: number; y: number }, b: { x: number; y: number }) => findCellPath(m, a, b);
-
-/** Flat, open test map with strongholds at either end. */
-function flatMap(w = 60, h = 30): GameMap {
-  const terrain = new Uint8Array(w * h).fill(PLAIN);
-  return { w, h, terrain, elev: new Float32Array(w * h), hq: [{ x: 4.5, y: h / 2 }, { x: w - 4.5, y: h / 2 }], seed: 0, preset: 'flat' };
-}
-
-function bareGame(m: GameMap): Game {
-  const g = createGame(m, { armySize: 1, composition: 'melee' });
-  g.units = [];
-  return g;
-}
-
-function addUnit(g: Game, team: 0 | 1, x: number, y: number, kind: 'melee' | 'ranged' = 'melee'): Unit {
-  const src = createGame(g.map, { armySize: 1, composition: kind }).units[0];
-  const u = { ...src, id: g.nextId++, team, x, y, path: [] };
-  g.units.push(u);
-  return u;
+function run(g: Game, seconds: number, ais: ReturnType<typeof createAi>[] = []) {
+  for (let t = 0; t < seconds && g.winner === null; t += 0.05) {
+    for (const a of ais) aiStep(g, a, 0.05);
+    step(g, 0.05);
+  }
 }
 
 describe('map generation', () => {
-  for (const preset of PRESETS) {
-    it(`${preset.id}: strongholds connected, point-symmetric`, () => {
-      for (const seed of [1, 2, 3, 42, 1234]) {
-        const m = generateMap(seed, preset.id, finder);
-        const reach = floodFrom(m, m.hq[0]);
-        expect(reach[Math.floor(m.hq[1].y) * m.w + Math.floor(m.hq[1].x)]).toBe(1);
-        for (let i = 0; i < m.terrain.length; i += 37) {
-          const x = i % m.w;
-          const y = (i - x) / m.w;
-          expect(m.terrain[(m.h - 1 - y) * m.w + (m.w - 1 - x)]).toBe(m.terrain[i]);
+  for (const n of [6, 7, 8, 9, 10]) {
+    it(`${n} nodes: connected, symmetric, capitals apart`, () => {
+      for (const seed of [1, 2, 3, 4, 5, 99, 1234]) {
+        const m = generateMap(seed, n);
+        expect(m.nodes.length).toBe(n);
+        for (const node of m.nodes) {
+          expect(hops(m, m.capitals[0], node.id)).toBeGreaterThanOrEqual(0);
+          expect(m.adj[node.id].length).toBeGreaterThanOrEqual(2);
+          const o = m.nodes[m.mirror[node.id]];
+          expect(o.x).toBeCloseTo(WORLD_W - node.x);
+          expect(o.y).toBeCloseTo(WORLD_H - node.y);
+          expect(o.kind).toBe(node.kind);
         }
+        expect(hops(m, m.capitals[0], m.capitals[1])).toBeGreaterThanOrEqual(3);
       }
     });
   }
-
-  it('is deterministic for a seed', () => {
-    const a = generateMap(77, 'passes', finder);
-    const b = generateMap(77, 'passes', finder);
-    expect(Array.from(a.terrain)).toEqual(Array.from(b.terrain));
-  });
-
-  it('mountain passes maps usually offer several distinct routes', () => {
-    const m = generateMap(5, 'passes', finder);
-    const g = createGame(m, { armySize: 4, composition: 'mixed' });
-    expect(distinctRoutes(g, m.hq[0], m.hq[1]).length).toBeGreaterThanOrEqual(2);
+  it('is deterministic', () => {
+    expect(JSON.stringify(generateMap(42, 8))).toBe(JSON.stringify(generateMap(42, 8)));
   });
 });
 
-describe('pathfinding', () => {
-  it('walks around a wall', () => {
-    const m = flatMap();
-    for (let y = 0; y < 25; y++) m.terrain[y * m.w + 30] = 4;
-    const p = findPath(m, { x: 20.5, y: 5.5 }, { x: 40.5, y: 5.5 })!;
-    expect(p).not.toBeNull();
-    expect(p.some((q) => q.y > 24)).toBe(true);
+describe('troops and battles', () => {
+  it('garrisons grow up to their cap', () => {
+    const g = createGame(generateMap(3, 8));
+    const cap = g.nodes[g.map.capitals[0]];
+    run(g, 20);
+    expect(cap.troops).toBeGreaterThan(45);
+    run(g, 200);
+    expect(cap.troops).toBeCloseTo(70, 0);
   });
-});
 
-describe('combat and supply', () => {
-  it('two attackers on one target deal more than double-one damage (flanking)', () => {
-    const solo = bareGame(flatMap());
-    const t1 = addUnit(solo, 1, 30, 15);
-    addUnit(solo, 0, 28.5, 15);
-    const pair = bareGame(flatMap());
-    const t2 = addUnit(pair, 1, 30, 15);
-    addUnit(pair, 0, 28.5, 15);
-    addUnit(pair, 0, 31.5, 15);
-    for (let i = 0; i < 30; i++) {
-      step(solo, 0.05);
-      step(pair, 0.05);
+  it('a strong column takes a neutral node; a weak one fails', () => {
+    const g = createGame(generateMap(3, 8));
+    const c0 = g.map.capitals[0];
+    const target = g.map.adj[c0].find((k) => g.nodes[k].owner === 2)!;
+    g.nodes[c0].troops = 80;
+    sendTroops(g, 0, c0, target, 60);
+    run(g, 40);
+    expect(g.nodes[target].owner).toBe(0);
+    const g2 = createGame(generateMap(3, 8));
+    sendTroops(g2, 0, c0, target, 2);
+    run(g2, 40);
+    expect(g2.nodes[target].owner).toBe(2);
+  });
+
+  it('even battles take long enough to matter (10-30 s)', () => {
+    const g = createGame(generateMap(3, 8));
+    const c0 = g.map.capitals[0];
+    const target = g.map.adj[c0].find((k) => g.nodes[k].owner === 2)!;
+    g.nodes[target].troops = 30;
+    g.nodes[c0].troops = 90;
+    sendTroops(g, 0, c0, target, 48);
+    let started = -1;
+    let ended = -1;
+    for (let t = 0; t < 120 && ended < 0; t += 0.05) {
+      step(g, 0.05);
+      const b = g.battles[0];
+      if (b && started < 0) started = g.time;
+      if (b && b.endedAt !== null) ended = b.endedAt;
     }
-    const soloLoss = 100 - t1.hp;
-    const pairLoss = 100 - t2.hp;
-    expect(pairLoss).toBeGreaterThan(soloLoss * 2.3);
+    expect(ended - started).toBeGreaterThan(10);
+    expect(ended - started).toBeLessThan(30);
   });
 
-  it('a surrounded unit is cut off; a frontline unit is not', () => {
-    const g = bareGame(flatMap());
-    const front = addUnit(g, 0, 20, 8);
-    addUnit(g, 1, 22, 8);
-    const trapped = addUnit(g, 0, 40, 15);
-    for (const [dx, dy] of [[2.4, 0], [-2.4, 0], [0, 2.4], [0, -2.4], [1.7, 1.7], [-1.7, 1.7], [1.7, -1.7], [-1.7, -1.7]]) addUnit(g, 1, 40 + dx, 15 + dy);
-    updateSupply(g);
-    expect(front.supplied).toBe(true);
-    expect(trapped.supplied).toBe(false);
+  it('defenders fight harder from a fort', () => {
+    const g = createGame(generateMap(3, 8));
+    const fort = g.map.nodes.find((n) => n.kind === 'fort')!.id;
+    const b = { id: 1, nodeId: fort, road: null, x: 0, y: 0, sides: [{ owner: 2 as const, troops: 20, momentum: 1 }, { owner: 0 as const, troops: 20, momentum: 1 }], startedAt: 0, endedAt: null, winner: null, peak: {} };
+    const r = lossRates(g, b);
+    expect(r.get(0)!).toBeGreaterThan(r.get(2)! * 1.35);
   });
 
-  it('strike buff increases damage', () => {
-    const a = bareGame(flatMap());
-    const ta = addUnit(a, 1, 30, 15);
-    addUnit(a, 0, 28.5, 15);
-    const b = bareGame(flatMap());
-    const tb = addUnit(b, 1, 30, 15);
-    const sb = addUnit(b, 0, 28.5, 15);
-    step(a, 0.05);
-    step(b, 0.05);
-    applyStrike(b, sb, 2);
-    for (let i = 0; i < 20; i++) {
-      step(a, 0.05);
-      step(b, 0.05);
+  it('opposing columns meeting on a road fight there', () => {
+    const g = createGame(generateMap(3, 8));
+    const [c0] = g.map.capitals;
+    const mid = g.map.adj[c0][0];
+    g.nodes[mid].owner = 1;
+    g.nodes[mid].troops = 30;
+    g.nodes[c0].troops = 60;
+    sendTroops(g, 0, c0, mid, 25);
+    sendTroops(g, 1, mid, c0, 20);
+    run(g, 6);
+    expect(g.battles.some((b) => b.road !== null)).toBe(true);
+  });
+
+  it('quick-time successes swing an even battle', () => {
+    const make = () => {
+      const g = createGame(generateMap(3, 8));
+      const c0 = g.map.capitals[0];
+      const target = g.map.adj[c0].find((k) => g.nodes[k].owner === 2)!;
+      g.nodes[target].troops = 30;
+      g.nodes[c0].troops = 90;
+      sendTroops(g, 0, c0, target, 26);
+      while (!g.battles.length) step(g, 0.05);
+      return { g, target };
+    };
+    const plain = make();
+    run(plain.g, 60);
+    expect(plain.g.nodes[plain.target].owner).toBe(2);
+    const boosted = make();
+    const kinds = ['volley', 'parry', 'slash', 'banner'] as const;
+    for (let i = 0; i < 60 * 20 && boosted.g.battles[0].endedAt === null; i++) {
+      if (i % 34 === 0) applyQte(boosted.g, boosted.g.battles[0].id, 0, kinds[(i / 34) % 4], true);
+      step(boosted.g, 0.05);
     }
-    expect(100 - tb.hp).toBeGreaterThan((100 - ta.hp) * 1.4);
-  });
-
-  it('an undefended stronghold falls', () => {
-    const g = bareGame(flatMap());
-    addUnit(g, 0, 50, 15);
-    addUnit(g, 1, 10, 3);
-    orderMove(g, [g.units[1].id], g.map.hq[0]);
-    for (let i = 0; i < 20 * 30 && g.winner === null; i++) step(g, 0.05);
-    expect(g.winner).toBe(1);
-    expect(g.winReason).toBe('Stronghold captured');
+    expect(boosted.g.nodes[boosted.target].owner).toBe(0);
+    expect(getBattle(boosted.g, boosted.g.battles[0].id)!.winner).toBe(0);
   });
 });
 
-describe('supply clock, passes and fog', () => {
-  it('a cut-off unit dies after the supply clock runs out, and recovers if reconnected', () => {
-    const g = bareGame(flatMap());
-    const trapped = addUnit(g, 0, 40, 15);
-    const ring = [[2.4, 0], [-2.4, 0], [0, 2.4], [0, -2.4], [1.7, 1.7], [-1.7, 1.7], [1.7, -1.7], [-1.7, -1.7]].map(([dx, dy]) => addUnit(g, 1, 40 + dx, 15 + dy));
-    for (const e of ring) e.hp = e.maxHp = 1e9; // keep the ring intact; only the clock matters here
-    trapped.hp = trapped.maxHp = 1e9;
-    for (let i = 0; i < (CUT_OFF_LIFE - 5) * 20; i++) step(g, 0.05);
-    expect(trapped.alive).toBe(true);
-    expect(trapped.cutTime).toBeGreaterThan(CUT_OFF_LIFE - 6);
-    for (let i = 0; i < 7 * 20; i++) step(g, 0.05);
-    expect(trapped.alive).toBe(false);
-  });
-
-  it('a group of 10 gets through a 2-cell gap without jamming', () => {
-    const m = flatMap();
-    for (let y = 0; y < m.h; y++) if (y < 14 || y > 15) m.terrain[y * m.w + 30] = 4;
-    const g = bareGame(m);
-    addUnit(g, 1, 56, 3); // a distant enemy so the game does not end at once
-    const us = Array.from({ length: 10 }, (_, i) => addUnit(g, 0, 18 + (i % 5) * 1.6, 11 + Math.floor(i / 5) * 4));
-    orderMove(g, us.map((u) => u.id), { x: 44, y: 15 });
-    for (let i = 0; i < 60 * 20; i++) step(g, 0.05);
-    const through = us.filter((u) => u.x > 31).length;
-    expect(through).toBe(10);
-  });
-
-  it('fog hides units beyond vision range', () => {
-    const g = createGame(flatMap(), { armySize: 1, composition: 'melee', fog: true });
-    g.units = [];
-    addUnit(g, 0, 20, 15);
-    expect(canSee(g, 0, { x: 20 + VISION - 1, y: 15 })).toBe(true);
-    expect(canSee(g, 0, { x: 20 + VISION + 2, y: 15 })).toBe(false);
-    g.fog = false;
-    expect(canSee(g, 0, { x: 55, y: 15 })).toBe(true);
-  });
-});
-
-describe('AI vs AI', () => {
-  for (const [preset, seed] of [['passes', 11], ['lakes', 12], ['highlands', 13], ['open', 14]] as const) {
-    it(`${preset}: a match finishes within 12 minutes`, () => {
-      const m = generateMap(seed, preset, finder);
-      const g = createGame(m, { armySize: 20, composition: 'mixed' });
-      const a = createAi(g, 0, 'normal', 1);
-      const b = createAi(g, 1, 'normal', 2);
-      const dt = 1 / 20;
-      while (g.winner === null && g.time < 720) {
-        aiStep(g, a, dt);
-        aiStep(g, b, dt);
-        step(g, dt);
-      }
-      console.log(`${preset}: winner=${g.winner} (${g.winReason}) at ${g.time.toFixed(0)}s, lost=${g.stats[0].lost}/${g.stats[1].lost}`);
+describe('AI', () => {
+  for (const [n, seed, level] of [[6, 11, 'normal'], [8, 12, 'normal'], [10, 13, 'normal'], [8, 14, 'hard'], [7, 15, 'easy'], [9, 16, 'normal']] as const) {
+    it(`AI vs AI finishes (${n} nodes, ${level})`, () => {
+      const g = createGame(generateMap(seed, n));
+      const ais = [createAi(0, level as Difficulty, 1), createAi(1, level as Difficulty, 2)];
+      run(g, 900, ais);
+      console.log(`AIvAI n=${n} ${level}: winner=${g.winner} (${g.winReason}) at ${g.time.toFixed(0)}s, battles=${g.battles.length}`);
       expect(g.winner).not.toBeNull();
     }, 60000);
   }
-});
 
-describe('AI resilience', () => {
-  // A player who only ever sends the whole army at the stronghold, with no mini-games.
-  // Regression guard, not a balance target: blobbing is strong under these rules (see README).
-  it('Normal AI beats a no-micro deathball on at least 3 of 8 maps', () => {
-    const cases = [['passes', 74423], ['passes', 11], ['lakes', 12], ['highlands', 13], ['open', 14], ['passes', 21], ['lakes', 22], ['open', 24]] as const;
-    let aiWins = 0;
-    for (const [preset, seed] of cases) {
-      const m = generateMap(seed, preset, finder);
-      const g = createGame(m, { armySize: 20, composition: 'mixed' });
-      const b = createAi(g, 1, 'normal', 2);
-      const dt = 1 / 20;
-      let tick = 0;
-      while (g.winner === null && g.time < 600) {
-        if (tick++ % 160 === 0) orderMove(g, g.units.filter((u) => u.alive && u.team === 0).map((u) => u.id), m.hq[1]);
-        aiStep(g, b, dt);
-        step(g, dt);
-      }
-      if (g.winner === 1) aiWins++;
-      console.log(`deathball ${preset}/${seed}: winner=${g.winner} (${g.winReason}) at ${g.time.toFixed(0)}s, lost=${g.stats[0].lost}/${g.stats[1].lost}`);
+  it('wars end decisively: most of 20 random maps end by capture before the clock', () => {
+    const times: number[] = [];
+    let stuck = 0;
+    let timeouts = 0;
+    for (let i = 0; i < 20; i++) {
+      const g = createGame(generateMap(500 + i * 37, 6 + (i % 5)));
+      run(g, 900, [createAi(0, 'normal', i), createAi(1, 'normal', i + 99)]);
+      if (g.winner === null) stuck++;
+      else times.push(g.time);
+      if (g.winReason.startsWith('Time')) timeouts++;
     }
-    expect(aiWins).toBeGreaterThanOrEqual(3);
+    times.sort((a, b) => a - b);
+    console.log(`sweep: stuck=${stuck}, timeouts=${timeouts}, median=${times[times.length >> 1]?.toFixed(0)}s, range=${times[0]?.toFixed(0)}-${times[times.length - 1]?.toFixed(0)}s`);
+    expect(stuck).toBe(0);
+    expect(timeouts).toBeLessThanOrEqual(5);
+  }, 120000);
+
+  it('a commander who plays quick-time events beats one who never does', () => {
+    let wins = 0;
+    const seeds = [21, 22, 23, 24, 25, 26];
+    for (const seed of seeds) {
+      for (const side of [0, 1] as const) {
+        const g = createGame(generateMap(seed, 8));
+        const withCmd = createAi(side, 'normal', seed, true);
+        const without = createAi((1 - side) as 0 | 1, 'normal', seed + 1, false);
+        run(g, 900, [withCmd, without]);
+        if (g.winner === side) wins++;
+      }
+    }
+    console.log(`commander wins ${wins}/${seeds.length * 2}`);
+    expect(wins).toBeGreaterThanOrEqual(Math.ceil(seeds.length * 2 * 0.75));
   }, 120000);
 });
