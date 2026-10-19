@@ -62,7 +62,7 @@ app.innerHTML = `
         </div>
         <div class="preview-wrap"><canvas id="preview"></canvas></div>
       </div>
-      <div class="actions"><button class="primary" id="start">Start war</button><button id="setup-help">How to play</button></div>
+      <div class="actions"><button class="primary" id="start">Start war</button><button id="training">Training: learn the quick-time events</button><button id="setup-help">How to play</button></div>
     </div>
   </section>
 
@@ -86,6 +86,7 @@ app.innerHTML = `
           <p><span class="ic parry"></span><b>Parry</b>: click the incoming spear before it reaches your shield. Miss and you lose troops.</p>
           <p><span class="ic slash"></span><b>Slash</b>: press on the filled mark and drag to the ring along the line. Boosts momentum.</p>
           <p><span class="ic banner"></span><b>Banner</b>: hold the mouse on the moving banner until the ring fills. Kills and boosts.</p>
+          <p>New to them? Use <b>Training</b> on the start screen to watch a demo of each and practise.</p>
           <p>Leave a battle with <b>Esc</b>, <b>right-click</b> or the button, or jump straight to another battle from the list on the right.</p>
           <p class="muted">Optional keys: 1–4 send ratio, P pause.</p>
         </div>
@@ -122,6 +123,7 @@ const bv = new BattleView($('bv'), {
   onQte: (battleId, kind, success) => (game ? applyQte(game, battleId, 0, kind, success) : ''),
   onLeave: () => leaveBattle(),
   onSwitch: (id) => enterBattle(id),
+  onPracticeExit: () => $("setup").classList.remove("hidden"),
 });
 
 // ---------- Setup ----------
@@ -147,6 +149,10 @@ function buildSetup() {
   });
   $('start').addEventListener('click', startGame);
   $('setup-help').addEventListener('click', () => $('help').classList.remove('hidden'));
+  $('training').addEventListener('click', () => {
+    $('setup').classList.add('hidden');
+    bv.showPractice('volley', true);
+  });
   refreshSetup(true);
 }
 
@@ -438,7 +444,14 @@ function frame(t: number) {
 
 function tick(dt: number) {
   now += dt;
-  if (!game || !ai) return;
+  if (!game || !ai) {
+    // Training runs from the lobby, with no war in progress.
+    if (bv.practicing) {
+      bv.update(null, dt);
+      bv.render(null);
+    }
+    return;
+  }
   if (!paused && game.winner === null) {
     acc += dt;
     while (acc >= STEP) {

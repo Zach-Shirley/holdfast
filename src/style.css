@@ -623,3 +623,102 @@ h3.gap {
 .muted {
   color: var(--muted);
 }
+
+/* ---------- Training ---------- */
+.bv-practice {
+  display: none;
+}
+.bv.practicing .bv-top,
+.bv.practicing .bv-cmdr,
+.bv.practicing .bv-result,
+.bv.practicing .bv-others,
+.bv.practicing .bv-leave {
+  display: none;
+}
+.bv.practicing .bv-practice {
+  position: absolute;
+  top: 16px;
+  right: 16px;
+  bottom: 16px;
+  width: 380px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 20px 22px;
+  overflow-y: auto;
+  background: rgba(14, 10, 13, 0.92);
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  font-size: 14px;
+  line-height: 1.5;
+}
+.pr-head {
+  font-family: "Bebas Neue", sans-serif;
+  font-size: 26px;
+  letter-spacing: 0.16em;
+  color: var(--red-hi);
+}
+.pr-tabs {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 6px;
+}
+.pr-tabs button {
+  padding: 7px 4px;
+  font-size: 13px;
+  border-bottom: 3px solid var(--c);
+}
+.bv-practice h2 {
+  margin: 8px 0 0;
+  font-size: 28px;
+}
+.bv-practice h4 {
+  margin: 6px 0 0;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+  color: var(--muted);
+}
+.bv-practice ol {
+  margin: 0;
+  padding-left: 20px;
+}
+.bv-practice li {
+  margin-bottom: 4px;
+}
+.bv-practice p {
+  margin: 0;
+}
+.pr-tip {
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.04);
+  color: #e9d7c9;
+  font-size: 13px;
+}
+.pr-mode {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  margin-top: 6px;
+}
+.pr-mode button {
+  padding: 10px;
+  font-weight: 700;
+}
+.pr-status {
+  color: var(--muted);
+  font-size: 13px;
+}
+.pr-status b {
+  color: var(--text);
+}
+.pr-back {
+  margin-top: auto;
+  padding: 10px;
+}
+.pr-back span {
+  font-size: 11px;
+  color: var(--muted);
+  margin-left: 6px;
+}

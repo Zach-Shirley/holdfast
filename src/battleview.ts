@@ -33,12 +33,81 @@ interface Floater {
   y: number;
   t: number;
   good: boolean;
+  /** Smaller explanatory line (why a miss happened, or a hint). */
+  small?: boolean;
+  hint?: boolean;
 }
+
+/** How each quick-time event works, shown on the Training screen. */
+export const DRILLS: Record<QteKind, { name: string; color: string; steps: string[]; effect: string; tip: string }> = {
+  volley: {
+    name: 'Volley',
+    color: '#ffa94d',
+    steps: [
+      'A target appears with a white ring shrinking toward it.',
+      'Click the target the moment the white ring touches its orange edge.',
+      'Clicking too early or too late is a miss. Clicks off the target are ignored.',
+    ],
+    effect: 'Kills about 7% of the enemy troops in the battle.',
+    tip: 'Watch the ring, not the target. The target glows brighter while you are inside the timing window.',
+  },
+  parry: {
+    name: 'Parry',
+    color: '#cfe8ff',
+    steps: [
+      'An enemy spear flies in from the edge toward your shield in the centre.',
+      'Click the spear head (inside the flashing circle) any time before it reaches the shield.',
+      'There is no "too early": click it as soon as you see it.',
+    ],
+    effect: 'Hit: your side gains momentum. Miss: the charge kills about 7% of your troops.',
+    tip: 'The spear comes from a random direction. Move your mouse toward it straight away.',
+  },
+  slash: {
+    name: 'Slash',
+    color: '#ff8a98',
+    steps: [
+      'A dashed line appears with a filled dot at one end and an empty ring at the other.',
+      'Press and hold the mouse on the filled dot.',
+      'Keep holding and drag along the dashes into the ring. Letting go early or straying far off the line is a miss.',
+    ],
+    effect: 'Your side fights 30% harder for a while (momentum).',
+    tip: 'You have over 2 seconds: a steady drag beats a fast flick.',
+  },
+  banner: {
+    name: 'Banner',
+    color: '#ffd166',
+    steps: [
+      'A red banner drifts slowly around the screen.',
+      'Press and hold the mouse button with the cursor on the banner.',
+      'Follow it while holding until the gold ring around it fills (about 1 second in total).',
+    ],
+    effect: 'Kills about 4% of the enemy and adds momentum.',
+    tip: 'Time only counts while the button is down and the cursor is on the banner. Slipping off just pauses the ring.',
+  },
+};
+
+/** Stand-in battle drawn behind the Training screen. */
+const FAKE_BATTLE: Battle = {
+  id: -1,
+  nodeId: null,
+  road: null,
+  x: 0,
+  y: 0,
+  sides: [
+    { owner: 0, troops: 40, momentum: 1 },
+    { owner: 1, troops: 40, momentum: 1 },
+  ],
+  startedAt: 0,
+  endedAt: null,
+  winner: null,
+  peak: {},
+};
 
 export interface BattleViewHooks {
   onQte: (battleId: number, kind: QteKind, success: boolean) => string;
   onLeave: () => void;
   onSwitch: (battleId: number) => void;
+  onPracticeExit?: () => void;
 }
 
 /**
@@ -61,6 +130,13 @@ export class BattleView {
   private h = 0;
   private now = 0;
   private els: Record<string, HTMLElement> = {};
+  /** Training mode: the drill being practised (null in a real battle). */
+  private practice: QteKind | null = null;
+  /** Demo mode: a ghost cursor performs the drill. */
+  private demo = false;
+  private pstats = { hit: 0, miss: 0, streak: 0 };
+  private clicks: { x: number; y: number; t: number }[] = [];
+  private lastHint = -9;
 
   constructor(private root: HTMLElement, private hooks: BattleViewHooks) {
     root.innerHTML = `
@@ -73,7 +149,8 @@ export class BattleView {
       <div class="bv-cmdr hidden" data-el="cmdr">Enemy commander is here</div>
       <div class="bv-result hidden" data-el="result"></div>
       <aside class="bv-others"><h4>Other battles</h4><div data-el="others"></div><div class="bv-ticker" data-el="ticker"></div></aside>
-      <button class="bv-leave" data-el="leave">Back to map <span>Esc · right-click</span></button>`;
+      <button class="bv-leave" data-el="leave">Back to map <span>Esc · right-click</span></button>
+      <aside class="bv-practice" data-el="practice"></aside>`;
     root.querySelectorAll<HTMLElement>('[data-el]').forEach((e) => (this.els[e.dataset.el!] = e));
     this.canvas = root.querySelector('.bv-canvas')!;
     this.ctx = this.canvas.getContext('2d')!;
@@ -82,22 +159,35 @@ export class BattleView {
       const id = (e.target as HTMLElement).closest<HTMLElement>('[data-bid]')?.dataset.bid;
       if (id) this.hooks.onSwitch(Number(id));
     });
+    this.els.practice.addEventListener('click', (e) => {
+      const el = (e.target as HTMLElement).closest<HTMLElement>('[data-kind],[data-act]');
+      if (!el || !this.practice) return;
+      if (el.dataset.kind) this.showPractice(el.dataset.kind as QteKind, true);
+      else if (el.dataset.act === 'demo') this.showPractice(this.practice, true);
+      else if (el.dataset.act === 'try') this.showPractice(this.practice, false);
+      else if (el.dataset.act === 'back') this.exitPractice();
+    });
+    window.addEventListener('keydown', (e) => {
+      if (this.practice && e.key === 'Escape') this.exitPractice();
+    });
     this.canvas.addEventListener('contextmenu', (e) => {
       e.preventDefault();
-      this.hooks.onLeave();
+      if (!this.practice) this.hooks.onLeave();
     });
+    // Real mouse input is ignored while the demo's ghost cursor is playing.
     this.canvas.addEventListener('mousedown', (e) => {
-      if (e.button !== 0) return;
+      if (e.button !== 0 || this.demo) return;
       this.mouse = { x: e.offsetX, y: e.offsetY, down: true };
       this.press();
     });
     this.canvas.addEventListener('mousemove', (e) => {
+      if (this.demo) return;
       this.mouse.x = e.offsetX;
       this.mouse.y = e.offsetY;
       this.drag();
     });
     window.addEventListener('mouseup', () => {
-      if (!this.mouse.down) return;
+      if (!this.mouse.down || this.demo) return;
       this.mouse.down = false;
       this.release();
     });
@@ -119,8 +209,64 @@ export class BattleView {
 
   hide() {
     this.battleId = null;
+    this.practice = null;
+    this.demo = false;
     this.qte = null;
+    this.root.classList.remove('practicing');
     this.root.classList.add('hidden');
+  }
+
+  get practicing() {
+    return this.practice !== null;
+  }
+
+  /** Training screen: practise one quick-time event on repeat, or watch a ghost cursor do it. */
+  showPractice(kind: QteKind, demo = false) {
+    if (kind !== this.practice || demo !== this.demo) this.pstats = { hit: 0, miss: 0, streak: 0 };
+    this.battleId = null;
+    this.practice = kind;
+    this.demo = demo;
+    this.qte = null;
+    this.gap = 0.6;
+    this.floaters = [];
+    this.mouse.down = false;
+    this.root.classList.remove('hidden');
+    this.root.classList.add('practicing');
+    this.resize();
+    this.renderPracticePanel();
+  }
+
+  exitPractice() {
+    this.hide();
+    this.hooks.onPracticeExit?.();
+  }
+
+  private renderPracticePanel() {
+    const kind = this.practice;
+    if (!kind) return;
+    const d = DRILLS[kind];
+    const tabs = (Object.keys(DRILLS) as QteKind[])
+      .map((k) => `<button data-kind="${k}" class="${k === kind ? 'on' : ''}" style="--c:${DRILLS[k].color}">${DRILLS[k].name}</button>`)
+      .join('');
+    const total = this.pstats.hit + this.pstats.miss;
+    const status = this.demo
+      ? '<p class="pr-status">Watching: the ghost cursor shows exactly when and where to click.</p>'
+      : `<p class="pr-status">Hits <b>${this.pstats.hit}</b> · Misses <b>${this.pstats.miss}</b>${total ? ` · ${Math.round((100 * this.pstats.hit) / total)}%` : ''} · Streak <b>${this.pstats.streak}</b></p>`;
+    this.els.practice.innerHTML = `
+      <div class="pr-head">TRAINING</div>
+      <div class="pr-tabs">${tabs}</div>
+      <h2 style="color:${d.color}">${d.name}</h2>
+      <h4>What to do</h4>
+      <ol>${d.steps.map((x) => `<li>${x}</li>`).join('')}</ol>
+      <h4>In battle</h4>
+      <p>${d.effect}</p>
+      <p class="pr-tip">${d.tip}</p>
+      <div class="pr-mode">
+        <button data-act="demo" class="${this.demo ? 'on' : ''}">Watch demo</button>
+        <button data-act="try" class="${!this.demo ? 'on' : ''}">Try it yourself</button>
+      </div>
+      ${status}
+      <button class="pr-back" data-act="back">Back to menu <span>Esc</span></button>`;
   }
 
   resize() {
@@ -133,6 +279,7 @@ export class BattleView {
 
   /** Play area for quick-time events: the middle of the screen, clear of the HUD. */
   private area() {
+    if (this.practice) return { x0: this.w * 0.06, x1: this.w - 420, y0: this.h * 0.16, y1: this.h * 0.86 };
     return { x0: this.w * 0.2, x1: this.w * 0.75, y0: this.h * 0.3, y1: this.h * 0.8 };
   }
 
@@ -144,7 +291,7 @@ export class BattleView {
   private spawn() {
     const kinds: QteKind[] = ['volley', 'parry', 'slash', 'banner'];
     const pool = kinds.filter((k) => k !== this.last);
-    const kind = pool[Math.floor(Math.random() * pool.length)];
+    const kind = this.practice ?? pool[Math.floor(Math.random() * pool.length)];
     this.last = kind;
     const a = this.area();
     const rx = () => a.x0 + 60 + Math.random() * (a.x1 - a.x0 - 120);
@@ -160,13 +307,33 @@ export class BattleView {
     }
   }
 
-  private resolve(success: boolean, x: number, y: number) {
-    if (!this.qte || this.battleId === null) return;
-    const text = this.hooks.onQte(this.battleId, this.qte.kind, success);
-    this.floaters.push({ text: text || (success ? 'Hit' : 'Miss'), x, y, t: 0, good: success });
-    if (!success && this.qte.kind === 'parry') this.shake = 0.35;
+  /** Finish the current event. `reason` explains a miss, so players learn what went wrong. */
+  private resolve(success: boolean, x: number, y: number, reason?: string) {
+    if (!this.qte) return;
+    const kind = this.qte.kind;
+    if (this.practice) {
+      if (!this.demo) {
+        this.pstats[success ? 'hit' : 'miss']++;
+        this.pstats.streak = success ? this.pstats.streak + 1 : 0;
+      }
+      this.floaters.push({ text: success ? 'Hit!' : 'Miss', x, y, t: 0, good: success });
+      this.renderPracticePanel();
+    } else {
+      if (this.battleId === null) return;
+      const text = this.hooks.onQte(this.battleId, kind, success);
+      this.floaters.push({ text: text || (success ? 'Hit' : 'Miss'), x, y, t: 0, good: success });
+    }
+    if (!success && reason) this.floaters.push({ text: reason, x, y: y + 34, t: 0, good: false, small: true });
+    if (!success && kind === 'parry') this.shake = 0.35;
     this.qte = null;
-    this.gap = GAP;
+    this.gap = this.practice ? 0.7 : GAP;
+  }
+
+  /** Non-failing nudge for a click in the wrong place. */
+  private hint(text: string) {
+    if (this.now - this.lastHint < 0.8) return;
+    this.lastHint = this.now;
+    this.floaters.push({ text, x: this.mouse.x, y: this.mouse.y + 10, t: 0, good: true, small: true, hint: true });
   }
 
   private parryPos(q: Extract<Qte, { kind: 'parry' }>) {
@@ -189,16 +356,23 @@ export class BattleView {
     const { x, y } = this.mouse;
     if (!q) return;
     if (q.kind === 'volley') {
-      if (Math.hypot(x - q.x, y - q.y) > VOLLEY_R + 24) return; // clicks off the target are ignored
-      this.resolve(Math.abs(q.t - VOLLEY_HIT) <= VOLLEY_WINDOW, q.x, q.y);
+      // Clicks off the target are ignored (with a hint), so a stray click never costs you.
+      if (Math.hypot(x - q.x, y - q.y) > VOLLEY_R + 24) return this.hint('Click on the target itself');
+      const early = q.t < VOLLEY_HIT - VOLLEY_WINDOW;
+      const ok = Math.abs(q.t - VOLLEY_HIT) <= VOLLEY_WINDOW;
+      this.resolve(ok, q.x, q.y, early ? 'Too early: wait until the white ring touches the target' : 'Too late: click as the rings meet');
     } else if (q.kind === 'parry') {
       const p = this.parryPos(q);
       if (Math.hypot(x - p.x, y - p.y) <= PARRY_HIT_R) this.resolve(true, p.x, p.y);
+      else this.hint('Click the spear head');
     } else if (q.kind === 'slash') {
       if (Math.hypot(x - q.ax, y - q.ay) <= SLASH_GRAB) {
         q.grabbed = true;
         q.trail = [{ x, y }];
-      }
+      } else this.hint('Press on the filled dot first');
+    } else {
+      const p = this.bannerPos(q);
+      if (Math.hypot(x - p.x, y - p.y) > BANNER_R) this.hint('Hold the button down on the banner');
     }
   }
 
@@ -211,21 +385,23 @@ export class BattleView {
     const dy = q.by - q.ay;
     const t = Math.max(0, Math.min(1, ((x - q.ax) * dx + (y - q.ay) * dy) / (dx * dx + dy * dy)));
     const off = Math.hypot(x - (q.ax + dx * t), y - (q.ay + dy * t));
-    if (off > SLASH_TOLERANCE) this.resolve(false, x, y);
+    if (off > SLASH_TOLERANCE) this.resolve(false, x, y, 'Strayed off the line: follow the dashes');
     else if (Math.hypot(x - q.bx, y - q.by) <= SLASH_GRAB) this.resolve(true, q.bx, q.by);
   }
 
   private release() {
     const q = this.qte;
-    if (q && q.kind === 'slash' && q.grabbed) this.resolve(false, this.mouse.x, this.mouse.y);
+    if (q && q.kind === 'slash' && q.grabbed) this.resolve(false, this.mouse.x, this.mouse.y, 'Let go too early: keep holding until the ring');
   }
 
-  update(g: Game, dt: number) {
-    if (this.battleId === null) return;
-    this.now += dt;
-    this.shake = Math.max(0, this.shake - dt);
-    for (const f of this.floaters) f.t += dt;
-    this.floaters = this.floaters.filter((f) => f.t < 1.3);
+  update(g: Game | null, dt: number) {
+    if (this.practice) {
+      this.tickCommon(dt);
+      this.tickQte(dt);
+      return;
+    }
+    if (this.battleId === null || !g) return;
+    this.tickCommon(dt);
     const b = getBattle(g, this.battleId);
     if (!b) return this.hooks.onLeave();
     if (b.endedAt !== null || !sideOf(b, 0) || sideOf(b, 0)!.troops <= 0.5) {
@@ -235,45 +411,160 @@ export class BattleView {
       if (this.now - this.endShownAt > 1.6) this.hooks.onLeave();
       return;
     }
+    this.tickQte(dt);
+  }
+
+  private tickCommon(dt: number) {
+    this.now += dt;
+    this.shake = Math.max(0, this.shake - dt);
+    for (const f of this.floaters) f.t += dt;
+    this.floaters = this.floaters.filter((f) => f.t < (f.small ? 2.2 : 1.3));
+    for (const c of this.clicks) c.t += dt;
+    this.clicks = this.clicks.filter((c) => c.t < 0.5);
+  }
+
+  private tickQte(dt: number) {
     if (!this.qte) {
+      if (this.demo) this.mouse.down = false;
       this.gap -= dt;
       if (this.gap <= 0) this.spawn();
       return;
     }
     const q = this.qte;
     q.t += dt;
-    if (q.kind === 'volley' && q.t > VOLLEY_LIFE) this.resolve(false, q.x, q.y);
+    if (this.demo) {
+      this.demoStep(dt);
+      if (!this.qte) return;
+    }
+    if (q.kind === 'volley' && q.t > VOLLEY_LIFE) this.resolve(false, q.x, q.y, 'Missed: click the target as the rings meet');
     else if (q.kind === 'parry' && q.t >= PARRY_TIME) {
       const c = this.center();
-      this.resolve(false, c.x, c.y);
-    } else if (q.kind === 'slash' && q.t >= SLASH_TIME) this.resolve(false, q.bx, q.by);
+      this.resolve(false, c.x, c.y, 'Too slow: click the spear before it hits your shield');
+    } else if (q.kind === 'slash' && q.t >= SLASH_TIME) this.resolve(false, q.bx, q.by, 'Too slow: press the dot, then drag to the ring');
     else if (q.kind === 'banner') {
       const p = this.bannerPos(q);
       if (this.mouse.down && Math.hypot(this.mouse.x - p.x, this.mouse.y - p.y) <= BANNER_R) q.held += dt;
       if (q.held >= BANNER_NEED) this.resolve(true, p.x, p.y);
-      else if (q.t >= BANNER_TIME) this.resolve(false, p.x, p.y);
+      else if (q.t >= BANNER_TIME) this.resolve(false, p.x, p.y, 'Hold the button down with the cursor on the banner');
     }
   }
 
-  render(g: Game) {
-    if (this.battleId === null) return;
-    const b = getBattle(g, this.battleId);
+  /** Ghost cursor for the demo: performs each event the way a player should. */
+  private demoStep(dt: number) {
+    const q = this.qte!;
+    const glide = (tx: number, ty: number, speed = 9) => {
+      const k = Math.min(1, dt * speed);
+      this.mouse.x += (tx - this.mouse.x) * k;
+      this.mouse.y += (ty - this.mouse.y) * k;
+    };
+    const click = (x: number, y: number) => {
+      this.mouse.x = x;
+      this.mouse.y = y;
+      this.clicks.push({ x, y, t: 0 });
+    };
+    if (q.kind === 'volley') {
+      glide(q.x, q.y);
+      if (q.t >= VOLLEY_HIT - 0.03) {
+        click(q.x, q.y);
+        this.press();
+      }
+    } else if (q.kind === 'parry') {
+      const p = this.parryPos(q);
+      glide(p.x, p.y, 12);
+      if (q.t >= 0.8) {
+        click(p.x, p.y);
+        this.press();
+      }
+    } else if (q.kind === 'slash') {
+      if (q.t < 0.6) glide(q.ax, q.ay, 10);
+      else if (!q.grabbed) {
+        click(q.ax, q.ay);
+        this.mouse.down = true;
+        this.press();
+      } else {
+        const f = Math.min(1, (q.t - 0.6) / 0.75);
+        this.mouse.x = q.ax + (q.bx - q.ax) * f;
+        this.mouse.y = q.ay + (q.by - q.ay) * f;
+        this.drag();
+      }
+    } else {
+      const p = this.bannerPos(q);
+      glide(p.x, p.y, 14);
+      if (q.t > 0.35 && !this.mouse.down) {
+        this.mouse.down = true;
+        this.clicks.push({ x: this.mouse.x, y: this.mouse.y, t: 0 });
+      }
+    }
+  }
+
+  private drawCursor() {
+    const { ctx } = this;
+    const { x, y, down } = this.mouse;
+    for (const c of this.clicks) {
+      ctx.strokeStyle = `rgba(255,255,255,${1 - c.t / 0.5})`;
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.arc(c.x, c.y, 10 + c.t * 70, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+    if (down) {
+      ctx.fillStyle = 'rgba(255,255,255,0.25)';
+      ctx.beginPath();
+      ctx.arc(x, y, 16, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.fillStyle = '#ffffff';
+    ctx.strokeStyle = '#111';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(x, y);
+    ctx.lineTo(x, y + 26);
+    ctx.lineTo(x + 7, y + 20);
+    ctx.lineTo(x + 12, y + 31);
+    ctx.lineTo(x + 16, y + 29);
+    ctx.lineTo(x + 11, y + 18);
+    ctx.lineTo(x + 20, y + 18);
+    ctx.closePath();
+    ctx.fill();
+    ctx.stroke();
+    ctx.font = '700 13px "Chakra Petch", sans-serif';
+    ctx.textAlign = 'left';
+    ctx.fillStyle = 'rgba(255,255,255,0.85)';
+    ctx.fillText(down ? 'holding' : 'demo', x + 22, y + 34);
+  }
+
+  render(g: Game | null) {
+    const b = this.practice ? FAKE_BATTLE : g && this.battleId !== null ? getBattle(g, this.battleId) : undefined;
     if (!b) return;
     const { ctx } = this;
     const sx = this.shake > 0 ? (Math.random() - 0.5) * 14 * (this.shake / 0.35) : 0;
     const sy = this.shake > 0 ? (Math.random() - 0.5) * 10 * (this.shake / 0.35) : 0;
     ctx.setTransform(this.dpr, 0, 0, this.dpr, this.dpr * sx, this.dpr * sy);
-    this.drawScene(g, b);
+    this.drawScene(this.practice ? null : g, b);
     this.drawQte();
     for (const f of this.floaters) {
-      ctx.globalAlpha = Math.max(0, 1 - f.t / 1.3);
-      ctx.fillStyle = f.good ? '#ffd27a' : '#ff8a8a';
-      ctx.font = '700 24px "Chakra Petch", sans-serif';
+      const life = f.small ? 2.2 : 1.3;
+      ctx.globalAlpha = Math.max(0, 1 - f.t / life);
       ctx.textAlign = 'center';
-      ctx.fillText(f.text, f.x, f.y - 40 - f.t * 40);
+      if (f.small) {
+        ctx.font = '600 17px "Chakra Petch", sans-serif';
+        const w = ctx.measureText(f.text).width + 20;
+        const y = f.y - 40 - f.t * 12;
+        ctx.fillStyle = 'rgba(0,0,0,0.7)';
+        ctx.beginPath();
+        ctx.roundRect(f.x - w / 2, y - 19, w, 27, 13);
+        ctx.fill();
+        ctx.fillStyle = f.hint ? '#e9d7c9' : '#ff9a9a';
+        ctx.fillText(f.text, f.x, y);
+      } else {
+        ctx.font = '700 24px "Chakra Petch", sans-serif';
+        ctx.fillStyle = f.good ? '#ffd27a' : '#ff8a8a';
+        ctx.fillText(f.text, f.x, f.y - 40 - f.t * 40);
+      }
       ctx.globalAlpha = 1;
     }
-    this.updateDom(g, b);
+    if (this.demo) this.drawCursor();
+    if (!this.practice && g) this.updateDom(g, b);
   }
 
   private sides(b: Battle): { left: { owner: Owner; troops: number; momentum: number }; right: { owner: Owner; troops: number; momentum: number } } {
@@ -286,7 +577,7 @@ export class BattleView {
     };
   }
 
-  private drawScene(g: Game, b: Battle) {
+  private drawScene(g: Game | null, b: Battle) {
     const { ctx, w, h } = this;
     const { left, right } = this.sides(b);
     // Dusk sky and ground.
@@ -315,7 +606,7 @@ export class BattleView {
       ctx.fill();
     }
     // Walls behind the holder of a fort or capital.
-    if (b.nodeId !== null) {
+    if (b.nodeId !== null && g) {
       const kind = g.map.nodes[b.nodeId].kind;
       const holder = g.nodes[b.nodeId].owner;
       if (kind !== 'village') {
@@ -331,7 +622,8 @@ export class BattleView {
       }
     }
     const total = left.troops + right.troops || 1;
-    const front = w * 0.5 + ((left.troops - right.troops) / total) * w * 0.14;
+    const mid = this.practice ? (this.area().x0 + this.area().x1) / 2 : w * 0.5;
+    const front = mid + ((left.troops - right.troops) / total) * w * 0.14;
     this.drawArmy(left.troops, front, horizon, -1, left.owner, left.momentum);
     this.drawArmy(right.troops, front, horizon, 1, right.owner, right.momentum);
     // Dust and sparks on the clash line.

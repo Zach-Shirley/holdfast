@@ -24,6 +24,8 @@ npm run build
   - **Slash:** drag from the start mark to the ring along the line. +0.3 momentum.
   - **Banner:** hold the mouse on the moving banner for 1 s. Kills about 4% and +0.15 momentum.
   - Leave with Esc, right-click or the button, or jump straight to another battle from the side list.
+  - Misses explain themselves (for example "Too early: wait until the white ring touches the target"), and a click in the wrong place gives a hint instead of a miss.
+- **Training** (start screen): pick any of the four events, read the steps, **watch a demo** where a ghost cursor performs it, then **practise** it on repeat with hits, misses and a streak counter.
 - **Enemy commander:** the AI plays the same quick-time events, one battle at a time, with a switching delay and a success rate set by difficulty (easy 55%, normal 70%, hard 82%). It deliberately attacks where your commander is not.
 - **Winning:** take the enemy capital. A 12-minute war clock breaks deadlocks: at zero, whoever holds more strongholds wins, with total troops as the tiebreak.
 
