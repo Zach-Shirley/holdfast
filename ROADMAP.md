@@ -1,6 +1,6 @@
 # Holdfast: Depth and Engagement Plan
 
-Written 2026-10-19 after Zach's playtest of v0.3 ("I prefer this much more… overall it's balanced"). Status: Phase 1 built 2026-10-19 (see README); later phases are proposals. Zach's answers: online 1v1 is an eventual goal (keep every action a simulation command), synthesized sound effects are fine, and a campaign is possible later.
+Written 2026-10-19 after Zach's playtest of v0.3 ("I prefer this much more… overall it's balanced"). Status: Phases 1 and 2 built 2026-10-19 (see README); later phases are proposals. Zach's answers: online 1v1 is an eventual goal (keep every action a simulation command), synthesized sound effects are fine, and a campaign is possible later.
 
 ## Where the game is now
 
