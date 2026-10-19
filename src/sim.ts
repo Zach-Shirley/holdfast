@@ -172,11 +172,14 @@ export interface Game {
   visionTimer: number;
   /** Each player's chosen commander. */
   commanders: [CommanderId, CommanderId];
+  /** No war clock (the tutorial). */
+  noClock: boolean;
 }
 
 export interface GameOptions {
   fog?: boolean;
   commanders?: [CommanderId, CommanderId];
+  noClock?: boolean;
 }
 
 export const commanderOf = (g: Game, owner: Owner): CommanderId => (owner === 2 ? 'none' : g.commanders[owner]);
@@ -223,6 +226,7 @@ export function createGame(map: GraphMap, opts: GameOptions = {}): Game {
     rallyTimer: 1,
     visionTimer: 0,
     commanders: opts.commanders ?? ['none', 'none'],
+    noClock: !!opts.noClock,
   };
 }
 
@@ -841,7 +845,7 @@ export function step(g: Game, dt: number) {
   } else if (g.nodes[c0].owner === 1) {
     g.winner = 1;
     g.winReason = 'Your capital fell';
-  } else if (g.time >= MATCH_TIME) {
+  } else if (g.time >= MATCH_TIME && !g.noClock) {
     const held = (p: Player) => g.nodes.filter((n) => n.owner === p).length;
     const troops = (p: Player) => totalTroops(g, p);
     const [h0, h1] = [held(0), held(1)];

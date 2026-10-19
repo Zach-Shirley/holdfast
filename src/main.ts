@@ -4,6 +4,7 @@ import { BattleView } from './battleview';
 import { NODE_STATS, ROAD_SPEED, SPECIALS, WORLD_H, WORLD_W, generateMap, type GraphMap } from './map';
 import { MapRenderer, OWNER_COLOR, applyPalette, nodeRadius, paintBackground } from './render';
 import { prefs, savePrefs } from './prefs';
+import { Tutorial, setupTutorialGame, tutorialMap } from './tutorial';
 import { applyVolume, audioSettings, audioState, initAudio, setIntensity, setMusic, sfx } from './sound';
 import {
   ABILITIES,
@@ -51,6 +52,8 @@ interface Settings {
 const settings: Settings = { nodes: 8, difficulty: 'normal', seed: randomSeed(), fog: 'off', commander: 'archer', rival: 'random', watchLeft: 'random' };
 /** Watch mode: two AIs fight and you observe. */
 let spectating = false;
+/** The tutorial level, when it is running. */
+let tutorial: Tutorial | null = null;
 let ai0: AiState | null = null;
 let leftRival: Personality = 'turtle';
 let watchSpeed = 1;
@@ -134,7 +137,7 @@ app.innerHTML = `
       </div>
       <h3 class="gap">Your commander</h3>
       <div class="commanders" id="commanders">${PLAYABLE.map((c) => `<button data-c="${c}"><b>${COMMANDERS[c].label}</b><i>${COMMANDERS[c].title}</i><span>${COMMANDERS[c].desc}</span></button>`).join('')}</div>
-      <div class="actions"><button class="primary" id="start">Start war</button><button id="training">Training: learn the quick-time events</button><button id="setup-help">How to play</button><button id="setup-settings">Settings</button></div>
+      <div class="actions"><button class="primary" id="start">Start war</button><button class="primary alt" id="tutorial">Tutorial</button><button id="training">Training: learn the quick-time events</button><button id="setup-help">How to play</button><button id="setup-settings">Settings</button></div>
       <div class="watch-row"><span>Watch two AIs fight (you observe):</span><div class="seg" data-key="watchLeft"><button data-v="random">Random</button>${RIVALS.map((p) => `<button data-v="${p}">${PERSONALITIES[p].label}</button>`).join('')}</div><span class="muted">vs the Rival above</span><button id="watch">Watch AI vs AI</button></div>
     </div>
   </section>
@@ -298,6 +301,7 @@ function buildSetup() {
     refreshSetup(true);
   });
   $('start').addEventListener('click', () => startGame(false));
+  $('tutorial').addEventListener('click', startTutorial);
   $('watch').addEventListener('click', () => startGame(true));
   document.querySelectorAll<HTMLElement>('#spec-speed button').forEach((b) => b.addEventListener('click', () => setWatchSpeed(Number(b.dataset.x))));
   $('spec-stop').addEventListener('click', () => {
@@ -372,9 +376,16 @@ function drawPreview(m: GraphMap) {
 
 // ---------- Lifecycle ----------
 
-function startGame(watch = false) {
+/** The tutorial: a hand-made map, a coach panel, a passive enemy until the scripted attack, no war clock. */
+function startTutorial() {
+  startGame(false, true);
+}
+
+function startGame(watch = false, tutorialMode = false) {
   if (!map) map = generateMap(settings.seed, settings.nodes);
   spectating = watch;
+  tutorial?.destroy();
+  tutorial = null;
   rival = settings.rival === 'random' ? RIVALS[Math.floor(Math.random() * RIVALS.length)] : settings.rival;
   if (watch) {
     leftRival = settings.watchLeft === 'random' ? RIVALS[Math.floor(Math.random() * RIVALS.length)] : settings.watchLeft;
@@ -384,7 +395,15 @@ function startGame(watch = false) {
   } else ai0 = null;
   const myCommander = watch ? PERSONALITIES[leftRival].commander : settings.commander;
   // No fog while watching: an observer sees the whole war.
-  game = createGame(map, { fog: !watch && settings.fog === 'on', commanders: [myCommander, PERSONALITIES[rival].commander] });
+  if (tutorialMode) {
+    rival = 'turtle';
+    game = createGame(tutorialMap(), { noClock: true, commanders: [settings.commander, 'none'] });
+    setupTutorialGame(game);
+    tutorial = new Tutorial(app, () => toast('Tutorial skipped: the war carries on', 'skip'));
+    // The lessons assume the default send amount and stance.
+    setRatio(0.5);
+    setStance('assault');
+  } else game = createGame(map, { fog: !watch && settings.fog === 'on', commanders: [myCommander, PERSONALITIES[rival].commander] });
   bv.spectating = watch;
   bv.names = names();
   document.querySelector('.force.you .lbl')!.textContent = names()[0];
@@ -395,8 +414,8 @@ function startGame(watch = false) {
   document.querySelector('.force.foe .lbl')!.setAttribute('title', `${PERSONALITIES[rival].name} (${PERSONALITIES[rival].label})`);
   selected.clear();
   targeting = null;
-  ai = createAi(1, settings.difficulty, settings.seed, true, rival);
-  renderer.setMap(map);
+  ai = createAi(1, tutorialMode ? 'easy' : settings.difficulty, settings.seed, true, rival);
+  renderer.setMap(game.map);
   onResize();
   paused = false;
   acc = 0;
@@ -425,7 +444,7 @@ function showEnd() {
   setMusic(false);
   sfx(won || spectating ? 'victory' : 'defeat');
   const [n0, n1] = names();
-  $('end-title').textContent = spectating ? `${game.winner === 0 ? n0 : n1} wins`.toUpperCase() : won ? 'VICTORY' : 'DEFEAT';
+  $('end-title').textContent = tutorial && won ? 'TUTORIAL COMPLETE' : spectating ? `${game.winner === 0 ? n0 : n1} wins`.toUpperCase() : won ? 'VICTORY' : 'DEFEAT';
   $('end-title').className = `title ${won || spectating ? 'win' : 'loss'}`;
   const t = Math.floor(game.time);
   if (spectating) {
@@ -533,6 +552,7 @@ canvas.addEventListener('mousedown', (e) => {
   const nodeDist = n !== null ? Math.hypot(game.map.nodes[n].x - w.x, game.map.nodes[n].y - w.y) : Infinity;
   if (col && col.d < 34 && col.d < nodeDist && reverseColumn(game, 0, col.c.id)) {
     sfx('retreat');
+    tutorial?.notify('reverse');
     toast(`Column turned back toward ${game.map.nodes[col.c.path[0]].name}`, 'reverse');
     return;
   }
@@ -693,9 +713,11 @@ function togglePause() {
 $('btn-pause').addEventListener('click', togglePause);
 $('btn-help').addEventListener('click', () => $('help').classList.toggle('hidden'));
 $('help-close').addEventListener('click', () => $('help').classList.add('hidden'));
-$('rematch').addEventListener('click', () => startGame(spectating));
+$('rematch').addEventListener('click', () => (tutorial ? startTutorial() : startGame(spectating)));
 $('newgame').addEventListener('click', () => {
   $('spectator').classList.add('hidden');
+  tutorial?.destroy();
+  tutorial = null;
   $('end').classList.add('hidden');
   document.querySelector('.hud-top')!.classList.add('hidden');
   $('dock').classList.add('hidden');
@@ -748,7 +770,7 @@ function updateHud(g: Game) {
   $('p0').style.width = `${(100 * t0) / (t0 + t1 || 1)}%`;
   // War clock counts down; at zero, whoever holds more strongholds wins.
   const s = Math.max(0, Math.ceil(MATCH_TIME - g.time));
-  $('clock').textContent = `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')} left`;
+  $('clock').textContent = g.noClock ? 'Tutorial' : `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')} left`;
   $('clock').classList.toggle('urgent', s <= 120);
   // Battle list in the dock: every battle you are part of, most urgent first.
   const mine = activeBattles(g)
@@ -838,7 +860,8 @@ function tick(dt: number) {
     acc += dt * (spectating ? watchSpeed : 1);
     while (acc >= STEP) {
       if (ai0) aiStep(game, ai0, STEP);
-      aiStep(game, ai, STEP);
+      if (tutorial) ai.passive = !tutorial.enemyFree;
+      if (!tutorial || tutorial.aiActive) aiStep(game, ai, STEP);
       step(game, STEP);
       acc -= STEP;
     }
@@ -846,11 +869,12 @@ function tick(dt: number) {
   }
   if (bv.open) bv.render(game);
   else {
-    const ui = { hover, drag, now, selected, box, rallyDrag, targeting, spectate: spectating, names: names() };
+    const ui = { hover, drag, now, selected, box, rallyDrag, targeting, spectate: spectating, names: names(), highlight: tutorial?.highlight(game) ?? [] };
     renderer.draw(game, ui);
     renderer.drawOverlay(ui);
   }
   updateHud(game);
+  tutorial?.update(game, { bvOpen: bv.open, bvBattleId: bv.battleId });
   if (game.winner !== null) {
     if (endShownAt < 0) endShownAt = now;
     if (now - endShownAt > 1.5 && $('end').classList.contains('hidden')) showEnd();

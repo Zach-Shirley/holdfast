@@ -87,6 +87,21 @@ npm run build
   - **Map sizes 12, 14 and 16** are added (strongholds pack slightly closer on big maps).
   - **Turn a column around:** click one of your marching columns and it heads back to the node it left. A click counts for the column if it is nearer the column than the stronghold.
   - **Fog of war hides more:** vision drops to 260 around strongholds and 190 around columns. Enemy counts you can see but are not within 150 of show rounded to the nearest 5 ("~25"), and the AI gets the same rough numbers. **Watchtowers** only show, and only count for the AI, in fog matches.
+- **Tutorial level** (gold **Tutorial** button on the start screen): a hand-made 7-stronghold map with a coach panel and gold pointers, 12 steps:
+  1. welcome and the goal
+  2. send troops (drag)
+  3. enter a battle
+  4. quick-time events and the rally meter
+  5. Charge!
+  6. what strongholds do
+  7. attacking walls: send amount, Assault stance, multi-send
+  8. rally routes (right-drag)
+  9. orders (March)
+  10. turning a column back
+  11. a scripted enemy attack: the commander flag, reinforcing and retreating
+  12. take the enemy capital
+
+  The enemy (Morwen, the Turtle, on Easy) stays passive until its scripted attack and only defends until the last step. There is no war clock. Steps that need an action advance by themselves, and you can skip at any time. Winning shows "Tutorial complete".
 - **Training** (start screen): pick any of the six events (including Duel and Pursuit), read the steps, **watch a demo** where a ghost cursor performs it, then **practise** it on repeat with hits, misses and a streak counter.
 - **Enemy commander:** the AI plays the same quick-time events, one battle at a time, with a switching delay and a success rate set by difficulty (easy 55%, normal 70%, hard 82%). It deliberately attacks where your commander is not.
 - **Winning:** take the enemy capital. A 12-minute war clock breaks deadlocks: at zero, whoever holds more strongholds wins, with total troops as the tiebreak.

@@ -979,3 +979,68 @@ h3.gap {
 .bv.spectating .bv-retreat {
   display: none;
 }
+
+/* ---------- Tutorial coach ---------- */
+/* Bottom-right on the map (the enemy side, away from early targets); top-left inside battles. */
+.coach {
+  position: fixed;
+  right: 12px;
+  bottom: 92px;
+  width: min(360px, calc(100% - 24px));
+  padding: 14px 16px;
+  background: rgba(16, 11, 15, 0.95);
+  border: 1px solid #ffd166;
+  border-radius: 16px;
+  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.6), 0 0 30px rgba(255, 209, 102, 0.12);
+  z-index: 9;
+  font-size: 14px;
+  line-height: 1.5;
+}
+.coach.in-battle {
+  right: auto;
+  bottom: auto;
+  left: 12px;
+  top: 130px;
+}
+.coach-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  color: #ffd166;
+}
+.coach-head button {
+  padding: 3px 9px;
+  font-size: 11px;
+  text-transform: none;
+  letter-spacing: 0;
+}
+.coach h3 {
+  margin: 8px 0 4px;
+  font-size: 18px;
+  text-transform: none;
+  letter-spacing: 0;
+  color: var(--text);
+}
+.coach p {
+  margin: 0 0 10px;
+  color: #e9d7c9;
+}
+.coach .primary {
+  padding: 7px 18px;
+}
+.coach .primary:disabled {
+  opacity: 0.4;
+}
+.coach-wait {
+  font-size: 12px;
+  color: var(--muted);
+  font-style: italic;
+}
+button.primary.alt {
+  background: linear-gradient(180deg, #ffd166, #e0a93a);
+  color: #2a1408;
+  border-color: #fff1c9;
+}

@@ -78,6 +78,8 @@ export interface MapUi {
   rallyDrag: { from: number; x: number; y: number; target: number | null } | null;
   /** Ability waiting for a target click. */
   targeting: 'march' | 'inspire' | null;
+  /** Tutorial: strongholds to point at. */
+  highlight?: number[];
   /** Watch mode: both sides are AIs; flags use their names. */
   spectate?: boolean;
   names?: [string, string];
@@ -321,6 +323,24 @@ export class MapRenderer {
 
     // Nodes.
     for (const n of m.nodes) this.drawNode(g, n, ui);
+    // Tutorial pointers: a pulsing gold ring and an arrow above.
+    for (const id of ui.highlight ?? []) {
+      const n = m.nodes[id];
+      const r = nodeRadius(n) + 22 + Math.sin(ui.now * 5) * 4;
+      ctx.strokeStyle = '#ffd166';
+      ctx.lineWidth = 4;
+      ctx.beginPath();
+      ctx.arc(n.x, n.y, r, 0, Math.PI * 2);
+      ctx.stroke();
+      const ay = n.y - r - 18 - Math.abs(Math.sin(ui.now * 4)) * 10;
+      ctx.fillStyle = '#ffd166';
+      ctx.beginPath();
+      ctx.moveTo(n.x, ay + 16);
+      ctx.lineTo(n.x - 12, ay);
+      ctx.lineTo(n.x + 12, ay);
+      ctx.closePath();
+      ctx.fill();
+    }
 
     // Battles: hidden in fog unless you can see them or are fighting in them.
     for (const b of activeBattles(g)) {

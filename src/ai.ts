@@ -176,6 +176,8 @@ export interface AiState {
   /** Turtle: after holding off an attack, counterattack boldly until this time. */
   counterUntil: number;
   started: boolean;
+  /** Defend only, never attack (used by the tutorial). */
+  passive: boolean;
 }
 
 export function createAi(me: Player, level: Difficulty, seed = 1, commander = true, personality: Personality = 'balanced'): AiState {
@@ -197,6 +199,7 @@ export function createAi(me: Player, level: Difficulty, seed = 1, commander = tr
     lastScan: 0,
     counterUntil: 0,
     started: false,
+    passive: false,
   };
 }
 
@@ -311,6 +314,8 @@ function think(g: Game, ai: AiState) {
       if (sendTroops(g, me, k, n.id, amt, 'hold')) need -= amt;
     }
   }
+
+  if (ai.passive) return;
 
   // 2. Offence: hit the weakest valuable node next to our territory, preferring places the
   // enemy commander is not watching.
