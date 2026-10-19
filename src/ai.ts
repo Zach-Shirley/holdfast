@@ -10,6 +10,8 @@ import {
   MATCH_TIME,
   activeBattles,
   applyQte,
+  event,
+  type CommanderId,
   getBattle,
   isRouting,
   redirectColumn,
@@ -41,6 +43,114 @@ export function duelReaction(ai: AiState): number {
   return AI_LEVELS[ai.level].duelReaction * (0.85 + ai.rng() * 0.3);
 }
 
+/** Rival personalities. 'balanced' is the plain AI (used by tests); the others shift its habits. */
+export type Personality = 'balanced' | 'aggressor' | 'turtle' | 'opportunist' | 'gambler';
+export const PERSONALITIES: Record<
+  Personality,
+  {
+    name: string;
+    /** Short name for the HUD. */
+    short: string;
+    label: string;
+    desc: string;
+    commander: CommanderId;
+    margin: number;
+    attacks: number;
+    reserveMul: number;
+    defendMul: number;
+    focusMul: number;
+    musterEvery: number;
+    taunts: { start: string[]; capture: string[]; lost: string[] };
+  }
+> = {
+  balanced: {
+    name: 'The Warden',
+    short: 'Warden',
+    label: 'Balanced',
+    desc: 'Plays it straight.',
+    commander: 'duelist',
+    margin: 0,
+    attacks: 0,
+    reserveMul: 1,
+    defendMul: 1,
+    focusMul: 1,
+    musterEvery: 6,
+    taunts: { start: ['Let us see what you are made of.'], capture: ['That one is mine now.'], lost: ['A fair blow.'] },
+  },
+  aggressor: {
+    name: 'Varric the Relentless',
+    short: 'Varric',
+    label: 'Aggressor',
+    desc: 'Constant pressure: attacks often, keeps thin reserves. Commands as the Raider.',
+    commander: 'raider',
+    margin: -0.15,
+    attacks: 1,
+    reserveMul: 0.75,
+    defendMul: 0.8,
+    focusMul: 1,
+    musterEvery: 5,
+    taunts: {
+      start: ['No walls will save you.', 'I do not wait. Neither should you.'],
+      capture: ['Another one burns.', 'Too slow!', 'Keep up, if you can.'],
+      lost: ['A scratch. I will be back before nightfall.', 'Fine. Take it. I am already moving.'],
+    },
+  },
+  turtle: {
+    name: 'Lady Morwen of the Wall',
+    short: 'Morwen',
+    label: 'Turtle',
+    desc: 'Fortifies, waits for you to break on her walls, then counterattacks. Commands as the Iron Wall.',
+    commander: 'ironwall',
+    margin: 0.2,
+    attacks: 0,
+    reserveMul: 1.15,
+    defendMul: 1.15,
+    focusMul: 1,
+    musterEvery: 8,
+    taunts: {
+      start: ['Come, then. My walls are patient.', 'Break yourself upon us.'],
+      capture: ['Now we advance.', 'You overextended.'],
+      lost: ['A stone falls. The wall stands.', 'Noted. It will not happen twice.'],
+    },
+  },
+  opportunist: {
+    name: 'Silas Quickfinger',
+    short: 'Silas',
+    label: 'Opportunist',
+    desc: 'Strikes wherever your commander is not, and harder while you are busy in a battle. Commands as the Archer.',
+    commander: 'archer',
+    margin: 0,
+    attacks: 1,
+    reserveMul: 1,
+    defendMul: 1,
+    focusMul: 1.8,
+    musterEvery: 6,
+    taunts: {
+      start: ['Watch the whole board. I will.', 'Eyes everywhere, friend?'],
+      capture: ['You were looking the other way.', 'Busy, were we?', 'Thank you for the opening.'],
+      lost: ['Clever. Do it again and I will be impressed.', 'Hm. You were watching.'],
+    },
+  },
+  gambler: {
+    name: 'Captain Rook',
+    short: 'Rook',
+    label: 'Gambler',
+    desc: 'All-in pushes on a whim: unpredictable odds, everything thrown at one target. Commands as the Herald.',
+    commander: 'herald',
+    margin: 0,
+    attacks: 0,
+    reserveMul: 1,
+    defendMul: 0.9,
+    focusMul: 1,
+    musterEvery: 4,
+    taunts: {
+      start: ['Double or nothing?', 'Let the dice decide.'],
+      capture: ['Ha! The dice love me today.', 'All in, and it paid.'],
+      lost: ['Bad roll. Next one is mine.', 'Easy come, easy go.'],
+    },
+  },
+};
+
 export interface AiState {
   me: Player;
   level: Difficulty;
@@ -58,11 +168,47 @@ export interface AiState {
   held: number;
   /** Nodes we just retreated from, and until when we stay away. */
   abandoned: Map<number, number>;
+  personality: Personality;
+  lastTaunt: number;
+  lastScan: number;
+  /** Turtle: after holding off an attack, counterattack boldly until this time. */
+  counterUntil: number;
+  started: boolean;
 }
 
-export function createAi(me: Player, level: Difficulty, seed = 1, commander = true): AiState {
-  return { me, level, thinkT: 1, focusT: 0, qteT: 0, arriveT: 0, rng: mulberry32(seed), commander, musterAt: 0, lastGainAt: 0, held: 1, abandoned: new Map() };
+export function createAi(me: Player, level: Difficulty, seed = 1, commander = true, personality: Personality = 'balanced'): AiState {
+  return {
+    me,
+    level,
+    thinkT: 1,
+    focusT: 0,
+    qteT: 0,
+    arriveT: 0,
+    rng: mulberry32(seed),
+    commander,
+    musterAt: 0,
+    lastGainAt: 0,
+    held: 1,
+    abandoned: new Map(),
+    personality,
+    lastTaunt: -99,
+    lastScan: 0,
+    counterUntil: 0,
+    started: false,
+  };
 }
+
+/** A line from the rival, shown to the player as a toast. Throttled so it never spams. */
+function taunt(g: Game, ai: AiState, kind: 'start' | 'capture' | 'lost') {
+  if (ai.personality === 'balanced' || g.time - ai.lastTaunt < 12) return;
+  const P = PERSONALITIES[ai.personality];
+  const lines = P.taunts[kind];
+  ai.lastTaunt = g.time;
+  event(g, { kind: 'taunt', text: `${P.name}: "${lines[Math.floor(ai.rng() * lines.length)]}"`, owner: ai.me, x: 0, y: 0 });
+}
+
+/** Personality reserve multiplier for the AI currently thinking (set at the top of think). */
+let reserveMul = 1;
 
 const VALUE = { capital: 6, fort: 2.4, village: 3 };
 /** Extra value of special strongholds (a Watchtower matters more under fog). */
@@ -88,7 +234,7 @@ function friendlyIncoming(g: Game, node: number, me: Player): number {
 }
 
 function reserve(g: Game, node: number): number {
-  return g.map.nodes[node].kind === 'capital' ? 12 : 4;
+  return (g.map.nodes[node].kind === 'capital' ? 12 : 4) * reserveMul;
 }
 
 function available(g: Game, node: number, me: Player): number {
@@ -102,9 +248,26 @@ function think(g: Game, ai: AiState) {
   const me = ai.me;
   const L = AI_LEVELS[ai.level];
   const m = g.map;
+  const P = PERSONALITIES[ai.personality];
+  reserveMul = P.reserveMul;
   const mine = g.nodes.filter((n) => n.owner === me);
   if (mine.length > ai.held) ai.lastGainAt = g.time;
   ai.held = mine.length;
+  // Personality reactions to what happened since the last look.
+  if (!ai.started) {
+    ai.started = true;
+    taunt(g, ai, 'start');
+  }
+  for (const b of g.battles) {
+    if (b.endedAt === null || b.endedAt <= ai.lastScan || b.nodeId === null) continue;
+    const enemyWasThere = b.sides.some((x) => x.owner === 1 - me);
+    if (b.winner === me && enemyWasThere && g.nodes[b.nodeId].owner === me) {
+      // Only a real assault beaten off (a sizeable enemy force) triggers the Turtle's counterattack.
+      if (b.sides[0]?.owner === me && (b.peak[1 - me] ?? 0) >= 15) ai.counterUntil = g.time + 12;
+      if (b.sides[0]?.owner === 1 - me) taunt(g, ai, 'capture');
+    } else if (b.winner === 1 - me && b.sides[0]?.owner === me) taunt(g, ai, 'lost');
+  }
+  ai.lastScan = g.time;
 
   const avoid = (n: number) => (ai.abandoned.get(n) ?? 0) > g.time;
 
@@ -136,6 +299,7 @@ function think(g: Game, ai: AiState) {
     } else {
       need = incoming(g, n.id, me) * 1.15 - n.troops * def - friendlyIncoming(g, n.id, me);
     }
+    need *= P.defendMul;
     if (need <= 1 || (n.battleId !== null && avoid(n.id))) continue;
     for (const k of [...m.adj[n.id]].sort((p, q) => available(g, q, me) - available(g, p, me))) {
       const av = available(g, k, me);
@@ -177,20 +341,27 @@ function think(g: Game, ai: AiState) {
     let margin = Math.max(0.6, L.margin - ((g.time - ai.lastGainAt) / 60) * 0.3);
     // Behind on strongholds with the war clock running down: take risks.
     if (g.time > MATCH_TIME - 240 && mine.length <= g.nodes.filter((x) => x.owner === 1 - me).length) margin = Math.min(margin, 0.7);
+    // The Turtle is cautious against enemy walls but still claims neutral ground early.
+    margin += ai.personality === 'turtle' && known.owner === 2 ? 0 : P.margin;
+    if (ai.personality === 'gambler') margin = 0.85 + ai.rng() * 0.6;
+    if (ai.personality === 'turtle' && ai.counterUntil > g.time) margin -= 0.25;
+    // Strike harder at targets well away from where the enemy commander is fighting.
+    if (ai.personality === 'opportunist' && focusNode !== null && hops(m, focusNode, t) >= 2) margin -= 0.12;
+    margin = Math.max(0.55, margin);
     const needed = est * margin + 3 - friendlyIncoming(g, t, me);
     // Never trickle: small top-ups are not worth a column.
     if (needed < 6) continue;
     const sources = m.adj[t].filter((k) => available(g, k, me) >= 3).sort((p, q) => available(g, q, me) - available(g, p, me)).slice(0, 2);
     const pool = sources.reduce((s, k) => s + available(g, k, me), 0);
     let score = (VALUE[kind] + specialValue(g, t) + (known.owner === 2 ? 0.6 : 0)) / needed;
-    if (focusNode !== null && hops(m, focusNode, t) >= 2) score *= 1.4;
+    if (focusNode !== null && hops(m, focusNode, t) >= 2) score *= 1 + 0.4 * P.focusMul;
     targets.push({ t, score, needed, sources, pool } as { t: number; score: number; needed: number; sources: number[]; pool: number });
   }
   targets.sort((p, q) => q.score - p.score);
   const ready = targets.filter((tg) => (tg as unknown as { pool: number }).pool >= tg.needed);
   // Nothing within reach: muster troops from across our territory at the node next to the best target.
   if (!ready.length && targets.length && g.time >= ai.musterAt) {
-    ai.musterAt = g.time + 6;
+    ai.musterAt = g.time + P.musterEvery;
     const tg = targets[0];
     const staging = m.adj[tg.t].filter((k) => g.nodes[k].owner === me && g.nodes[k].battleId === null).sort((p, q) => g.nodes[q].troops - g.nodes[p].troops)[0];
     if (staging !== undefined) {
@@ -202,8 +373,9 @@ function think(g: Game, ai: AiState) {
       }
     }
   }
-  for (const tg of ready.slice(0, L.attacks)) {
-    let left = tg.needed;
+  for (const tg of ready.slice(0, L.attacks + P.attacks)) {
+    // The Gambler throws everything it has at the target.
+    let left = ai.personality === 'gambler' && ai.rng() < 0.25 ? Infinity : tg.needed;
     for (const k of tg.sources) {
       const amt = Math.min(available(g, k, me), left);
       // Walls call for an assault; open villages for speed.

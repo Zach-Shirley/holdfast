@@ -1,6 +1,6 @@
 # Holdfast: Depth and Engagement Plan
 
-Written 2026-10-19 after Zach's playtest of v0.3 ("I prefer this much more… overall it's balanced"). Status: Phases 1–3 built 2026-10-19 (see README); later phases are proposals. Zach's answers: online 1v1 is an eventual goal (keep every action a simulation command), synthesized sound effects are fine, and a campaign is possible later.
+Written 2026-10-19 after Zach's playtest of v0.3 ("I prefer this much more… overall it's balanced"). Status: Phases 1–4 built 2026-10-19 (see README); later phases are proposals. Zach's answers: online 1v1 is an eventual goal (keep every action a simulation command), synthesized sound effects are fine, and a campaign is possible later.
 
 ## Where the game is now
 
@@ -72,7 +72,7 @@ Verification: unit tests for each mechanic; extend the AI-vs-AI sweep; a "comman
 
 The AI needs to value specialties, use rally routes and abilities, and play under fog (as an honest opponent, not a cheater).
 
-## Phase 4: Commanders and rival personalities (replayability)
+## Phase 4: Commanders and rival personalities (BUILT 2026-10-19)
 
 *About 2 days. Confidence: medium-high.*
 

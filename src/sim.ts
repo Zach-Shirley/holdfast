@@ -52,6 +52,17 @@ export const SHRINE_POWER = 1.25;
 /** A rally route forwards everything above this reserve once at least 6 troops are spare. */
 export const RALLY_RESERVE = 5;
 
+/** Commanders: chosen before a war, each with a passive and a quick-time twist. */
+export type CommanderId = 'none' | 'archer' | 'duelist' | 'ironwall' | 'raider' | 'herald';
+export const COMMANDERS: Record<CommanderId, { label: string; title: string; desc: string }> = {
+  none: { label: 'No commander', title: '', desc: 'Plain rules.' },
+  archer: { label: 'The Archer', title: 'Master of the volley', desc: 'Volleys kill 60% more, and the Volley ring closes more slowly (easier timing).' },
+  duelist: { label: 'The Duelist', title: 'Blade in hand', desc: 'A successful Slash also cuts down troops. You win duels by a 0.1 s margin.' },
+  ironwall: { label: 'The Iron Wall', title: 'Unbreakable', desc: 'A missed Parry costs nothing. Your walls are 0.2 stronger.' },
+  raider: { label: 'The Raider', title: 'Fast and hungry', desc: 'Your columns march 25% faster, and your road ambushes start with +0.5 momentum.' },
+  herald: { label: 'The Herald', title: 'Voice of the host', desc: 'Your rally meter fills 40% faster (Charge! comes sooner).' },
+};
+
 /** Commander abilities, used from the map on cooldowns. */
 export type Ability = 'march' | 'inspire' | 'spy';
 export const ABILITIES: Record<Ability, { label: string; desc: string; cooldown: number; duration: number }> = {
@@ -113,7 +124,7 @@ export interface Battle {
 }
 
 export interface GameEvent {
-  kind: 'battle' | 'captured' | 'lost' | 'won' | 'held' | 'intercept' | 'qte' | 'retreat' | 'finisher' | 'duel';
+  kind: 'battle' | 'captured' | 'lost' | 'won' | 'held' | 'intercept' | 'qte' | 'retreat' | 'finisher' | 'duel' | 'taunt';
   text: string;
   owner: Owner;
   x: number;
@@ -156,11 +167,16 @@ export interface Game {
   spyUntil: [number, number];
   rallyTimer: number;
   visionTimer: number;
+  /** Each player's chosen commander. */
+  commanders: [CommanderId, CommanderId];
 }
 
 export interface GameOptions {
   fog?: boolean;
+  commanders?: [CommanderId, CommanderId];
 }
+
+export const commanderOf = (g: Game, owner: Owner): CommanderId => (owner === 2 ? 'none' : g.commanders[owner]);
 
 const emptyStats = (): PlayerStats => ({ battlesFought: 0, battlesWon: 0, qtePlayed: 0, qteHit: 0, troopsSent: 0, nodesTaken: 0, finishers: 0, retreats: 0, duels: 0, duelsWon: 0 });
 
@@ -203,6 +219,7 @@ export function createGame(map: GraphMap, opts: GameOptions = {}): Game {
     spyUntil: [-1, -1],
     rallyTimer: 1,
     visionTimer: 0,
+    commanders: opts.commanders ?? ['none', 'none'],
   };
 }
 
@@ -299,8 +316,8 @@ export function sideOf(b: Battle, owner: Owner): Side | undefined {
 
 /** Defence multiplier for a side: the holder of a node fights from its walls. */
 export function sideDefense(g: Game, b: Battle, s: Side): number {
-  if (b.nodeId === null) return 1;
-  return g.nodes[b.nodeId].owner === s.owner ? NODE_STATS[g.map.nodes[b.nodeId].kind].defense : 1;
+  if (b.nodeId === null || g.nodes[b.nodeId].owner !== s.owner) return 1;
+  return NODE_STATS[g.map.nodes[b.nodeId].kind].defense + (commanderOf(g, s.owner) === 'ironwall' ? 0.2 : 0);
 }
 
 /** A side that has fallen below a quarter of its peak strength breaks and takes extra losses. */
@@ -402,7 +419,10 @@ function posOnRoad(c: Column, a: number): number {
 
 function startBattle(g: Game, nodeId: number | null, road: Battle['road'], x: number, y: number, sides: Side[]): Battle {
   const b: Battle = { id: g.nextId++, nodeId, road, x, y, sides, startedAt: g.time, endedAt: null, winner: null, peak: {} };
-  for (const s of sides) if (specialNear(g, s.owner, battleNodes(b), 'forge')) s.momentum += FORGE_MOMENTUM;
+  for (const s of sides) {
+    if (specialNear(g, s.owner, battleNodes(b), 'forge')) s.momentum += FORGE_MOMENTUM;
+    if (road && commanderOf(g, s.owner) === 'raider') s.momentum += 0.5;
+  }
   for (const s of sides) b.peak[s.owner] = s.troops;
   g.battles.push(b);
   for (const s of sides) if (s.owner !== 2) g.stats[s.owner].battlesFought++;
@@ -421,7 +441,7 @@ function joinBattle(g: Game, b: Battle, owner: Owner, troops: number, march?: Si
   b.peak[owner] = Math.max(b.peak[owner] ?? 0, s.troops);
 }
 
-function event(g: Game, e: Omit<GameEvent, 't'>) {
+export function event(g: Game, e: Omit<GameEvent, 't'>) {
   g.events.push({ ...e, t: g.time });
 }
 
@@ -494,24 +514,27 @@ export function applyQte(g: Game, battleId: number, owner: Player, kind: QteKind
   g.stats[owner].qtePlayed++;
   if (success) g.stats[owner].qteHit++;
   if (!b || !me || b.endedAt !== null) return '';
-  me.rally = Math.max(0, Math.min(1, me.rally + (success ? RALLY_PER_HIT : -RALLY_PER_MISS)));
+  const cmd = commanderOf(g, owner);
+  me.rally = Math.max(0, Math.min(1, me.rally + (success ? RALLY_PER_HIT * (cmd === 'herald' ? 1.4 : 1) : -RALLY_PER_MISS)));
   const shrine = specialNear(g, owner, battleNodes(b), 'shrine') ? SHRINE_POWER : 1;
   const kill = (frac: number) => killEnemies(b, owner, frac, QTE_POWER * shrine);
   const bump = (d: number) => bumpMomentum(me, d * shrine);
   switch (kind) {
     case 'volley':
-      return success ? `Volley! ${kill(0.07)} down` : 'Volley missed';
+      return success ? `Volley! ${kill(cmd === 'archer' ? 0.07 * 1.6 : 0.07)} down` : 'Volley missed';
     case 'parry':
       if (success) {
         bump(0.15 * QTE_POWER);
         return 'Charge parried';
       } else {
+        if (cmd === 'ironwall') return 'The Iron Wall holds: no losses';
         const lost = me.troops * 0.07 + 1;
         me.troops -= lost;
         return `Charge broke through: −${Math.round(lost)}`;
       }
     case 'slash':
       bump(success ? 0.3 * QTE_POWER : -0.1);
+      if (success && cmd === 'duelist') return `Line broken: ${kill(0.05)} down`;
       return success ? 'Line broken: momentum up' : 'Slash fumbled';
     case 'banner':
       if (!success) return 'Banner lost';
@@ -713,7 +736,8 @@ export function step(g: Game, dt: number) {
     const a = Math.min(c.from, c.path[0]);
     const before = posOnRoad(c, a);
     const road = edgeBetween(m, c.from, c.path[0])!.road;
-    c.progress += COLUMN_SPEED * STANCES[c.stance].speed * ROAD_SPEED[road] * (c.forcedUntil > g.time ? 2 : 1) * dt;
+    const raider = commanderOf(g, c.owner) === 'raider' ? 1.25 : 1;
+    c.progress += COLUMN_SPEED * STANCES[c.stance].speed * ROAD_SPEED[road] * (c.forcedUntil > g.time ? 2 : 1) * raider * dt;
     const after = posOnRoad(c, a);
     const rb = roadBattles.find((b) => b.road!.a === a && b.road!.b === Math.max(c.from, c.path[0]) && (before - b.road!.pos) * (after - b.road!.pos) <= 0);
     if (rb) {

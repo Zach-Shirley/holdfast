@@ -15,7 +15,6 @@ const PURSUIT_R = 30;
 /** Volley: click the target when the closing ring meets it. */
 const VOLLEY_HIT = 1.0;
 const VOLLEY_WINDOW = 0.3;
-const VOLLEY_LIFE = VOLLEY_HIT + VOLLEY_WINDOW + 0.05;
 const VOLLEY_R = 38;
 /** Parry: click the incoming spear before it reaches your shield. */
 const PARRY_TIME = 1.55;
@@ -163,6 +162,11 @@ export class BattleView {
   private lastDuel = -99;
   /** Quick-time speed from settings: 0.8 slower, 1.2 faster. */
   timeScale = 1;
+  /** Your commander's battle perks: the Archer's slower Volley ring, the Duelist's duel margin. */
+  perks = { volleySlow: false, duelGrace: 0 };
+  private get volleyHit() {
+    return this.perks.volleySlow ? 1.35 : VOLLEY_HIT;
+  }
   private voice: Voice | null = null;
   private bannerTick = 0;
   /** Soldiers knocked down when troops die, drawn tumbling and fading. */
@@ -413,7 +417,7 @@ export class BattleView {
       };
     } else if (kind === 'volley') {
       this.qte = { kind, t: 0, x: rx(), y: ry() };
-      this.voice = volleyTone(VOLLEY_HIT / this.timeScale);
+      this.voice = volleyTone(this.volleyHit / this.timeScale);
     }
     else if (kind === 'parry') {
       this.qte = { kind, t: 0, ang: Math.random() * Math.PI * 2 };
@@ -491,8 +495,8 @@ export class BattleView {
     if (q.kind === 'volley') {
       // Clicks off the target are ignored (with a hint), so a stray click never costs you.
       if (Math.hypot(x - q.x, y - q.y) > VOLLEY_R + 24) return this.hint('Click on the target itself');
-      const early = q.t < VOLLEY_HIT - VOLLEY_WINDOW;
-      const ok = Math.abs(q.t - VOLLEY_HIT) <= VOLLEY_WINDOW;
+      const early = q.t < this.volleyHit - VOLLEY_WINDOW;
+      const ok = Math.abs(q.t - this.volleyHit) <= VOLLEY_WINDOW;
       this.resolve(ok, q.x, q.y, early ? 'Too early: wait until the white ring touches the target' : 'Too late: click as the rings meet');
     } else if (q.kind === 'parry') {
       const p = this.parryPos(q);
@@ -510,7 +514,7 @@ export class BattleView {
       if (q.t < q.fireAt) return this.resolve(false, q.x, q.y, 'False start: wait for the NOW! signal');
       if (Math.hypot(x - q.x, y - q.y) > DUEL_TARGET_R + 20) return this.hint('Click the NOW! target');
       const reaction = q.t - q.fireAt;
-      this.resolve(reaction <= q.enemy, q.x, q.y, `Too slow: ${Math.round(reaction * 1000)} ms vs their ${Math.round(q.enemy * 1000)} ms`);
+      this.resolve(reaction <= q.enemy + this.perks.duelGrace, q.x, q.y, `Too slow: ${Math.round(reaction * 1000)} ms vs their ${Math.round(q.enemy * 1000)} ms`);
     } else {
       const r = q.runners.find((u) => !u.hit && Math.hypot(x - u.x, y - u.y) <= PURSUIT_R + 8);
       if (!r) return this.hint('Click the fleeing soldiers');
@@ -592,11 +596,11 @@ export class BattleView {
       this.demoStep(dt);
       if (!this.qte) return;
     }
-    if (q.kind === 'duel' && q.t > q.fireAt + q.enemy) this.resolve(false, q.x, q.y, 'Too slow: the enemy commander struck first');
+    if (q.kind === 'duel' && q.t > q.fireAt + q.enemy + this.perks.duelGrace) this.resolve(false, q.x, q.y, 'Too slow: the enemy commander struck first');
     else if (q.kind === 'pursuit' && q.t >= PURSUIT_TIME) {
       const hits = q.runners.filter((r) => r.hit).length;
       this.resolve(hits > 0, this.center().x, this.center().y, hits ? undefined : 'They got away: click the runners as they flee', hits);
-    } else if (q.kind === 'volley' && q.t > VOLLEY_LIFE) this.resolve(false, q.x, q.y, 'Missed: click the target as the rings meet');
+    } else if (q.kind === 'volley' && q.t > (this.volleyHit + VOLLEY_WINDOW + 0.05)) this.resolve(false, q.x, q.y, 'Missed: click the target as the rings meet');
     else if (q.kind === 'parry' && q.t >= PARRY_TIME) {
       const c = this.center();
       this.resolve(false, c.x, c.y, 'Too slow: click the spear before it hits your shield');
@@ -631,7 +635,7 @@ export class BattleView {
     };
     if (q.kind === 'volley') {
       glide(q.x, q.y);
-      if (q.t >= VOLLEY_HIT - 0.03) {
+      if (q.t >= this.volleyHit - 0.03) {
         click(q.x, q.y);
         this.press();
       }
@@ -941,8 +945,8 @@ export class BattleView {
     const { ctx } = this;
     ctx.lineCap = 'round';
     if (q.kind === 'volley') {
-      const ring = VOLLEY_R * (1 + 2.4 * Math.max(-0.4, 1 - q.t / VOLLEY_HIT));
-      const inWindow = Math.abs(q.t - VOLLEY_HIT) <= VOLLEY_WINDOW;
+      const ring = VOLLEY_R * (1 + 2.4 * Math.max(-0.4, 1 - q.t / this.volleyHit));
+      const inWindow = Math.abs(q.t - this.volleyHit) <= VOLLEY_WINDOW;
       ctx.fillStyle = inWindow ? 'rgba(255,169,77,0.35)' : 'rgba(255,169,77,0.15)';
       ctx.strokeStyle = '#ffa94d';
       ctx.lineWidth = 4;

@@ -900,3 +900,43 @@ h3.gap {
     display: none;
   }
 }
+
+/* ---------- Phase 4: commanders and rivals ---------- */
+.commanders {
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  gap: 8px;
+}
+.commanders button {
+  display: grid;
+  gap: 3px;
+  align-content: start;
+  text-align: left;
+  padding: 10px;
+  min-height: 118px;
+}
+.commanders button i {
+  font-size: 11px;
+  color: #ffd166;
+  font-style: normal;
+}
+.commanders button span {
+  font-size: 11px;
+  line-height: 1.35;
+  color: var(--muted);
+}
+.toast.taunt {
+  border-color: var(--p1);
+  color: var(--p1-light);
+  font-style: italic;
+  max-width: 360px;
+}
+@media (max-width: 900px) {
+  .commanders {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+
+.force span {
+  white-space: nowrap;
+}

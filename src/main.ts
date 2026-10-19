@@ -1,5 +1,5 @@
 import './style.css';
-import { aiStep, createAi, duelReaction, type AiState, type Difficulty } from './ai';
+import { PERSONALITIES, aiStep, createAi, duelReaction, type AiState, type Difficulty, type Personality } from './ai';
 import { BattleView } from './battleview';
 import { NODE_STATS, ROAD_SPEED, SPECIALS, WORLD_H, WORLD_W, generateMap, type GraphMap } from './map';
 import { MapRenderer, OWNER_COLOR, applyPalette, nodeRadius, paintBackground } from './render';
@@ -7,7 +7,9 @@ import { prefs, savePrefs } from './prefs';
 import { applyVolume, audioSettings, audioState, initAudio, setIntensity, setMusic, sfx } from './sound';
 import {
   ABILITIES,
+  COMMANDERS,
   MATCH_TIME,
+  type CommanderId,
   STANCES,
   canSee,
   columnPos,
@@ -40,8 +42,14 @@ interface Settings {
   difficulty: Difficulty;
   seed: number;
   fog: 'off' | 'on';
+  commander: CommanderId;
+  rival: Personality | 'random';
 }
-const settings: Settings = { nodes: 8, difficulty: 'normal', seed: randomSeed(), fog: 'off' };
+const settings: Settings = { nodes: 8, difficulty: 'normal', seed: randomSeed(), fog: 'off', commander: 'archer', rival: 'random' };
+/** The rival actually facing you this war (Random resolves at start). */
+let rival: Personality = 'aggressor';
+const RIVALS: Personality[] = ['aggressor', 'turtle', 'opportunist', 'gambler'];
+const PLAYABLE: CommanderId[] = ['archer', 'duelist', 'ironwall', 'raider', 'herald'];
 /** Strongholds picked with the selection box, for sending from several at once. */
 const selected = new Set<number>();
 let box: { x0: number; y0: number; x1: number; y1: number } | null = null;
@@ -99,6 +107,8 @@ app.innerHTML = `
           <div class="seg" data-key="nodes">${[6, 7, 8, 9, 10].map((n) => `<button data-v="${n}">${n}</button>`).join('')}</div>
           <h3 class="gap">Enemy</h3>
           <div class="seg" data-key="difficulty"><button data-v="easy">Easy</button><button data-v="normal">Normal</button><button data-v="hard">Hard</button></div>
+          <h3 class="gap">Rival</h3>
+          <div class="seg" data-key="rival"><button data-v="random">Random</button>${RIVALS.map((p) => `<button data-v="${p}" title="${PERSONALITIES[p].desc}">${PERSONALITIES[p].label}</button>`).join('')}</div>
           <h3 class="gap">Fog of war</h3>
           <div class="seg" data-key="fog"><button data-v="off">Off</button><button data-v="on">On</button></div>
           <h3 class="gap">Map</h3>
@@ -106,6 +116,8 @@ app.innerHTML = `
         </div>
         <div class="preview-wrap"><canvas id="preview"></canvas></div>
       </div>
+      <h3 class="gap">Your commander</h3>
+      <div class="commanders" id="commanders">${PLAYABLE.map((c) => `<button data-c="${c}"><b>${COMMANDERS[c].label}</b><i>${COMMANDERS[c].title}</i><span>${COMMANDERS[c].desc}</span></button>`).join('')}</div>
       <div class="actions"><button class="primary" id="start">Start war</button><button id="training">Training: learn the quick-time events</button><button id="setup-help">How to play</button><button id="setup-settings">Settings</button></div>
     </div>
   </section>
@@ -129,6 +141,9 @@ app.innerHTML = `
           <p><b>Rout:</b> a side below a quarter of its peak breaks and takes 25% extra losses. Chase a routing enemy with <b>Pursuit</b>.</p>
           <p><b>Stances</b> (dock): Assault +20% damage, Hold −20% damage taken, Skirmish +25% march speed. Each brings more of one event type.</p>
           <p>Red arrows at the screen edge point to your other battles that are going badly. Click one to jump there.</p>
+          <h3>Commanders and rivals</h3>
+          <p>Pick a <b>commander</b> before each war: the Archer (stronger, easier Volleys), the Duelist (Slash kills, duel edge), the Iron Wall (free Parry misses, stronger walls), the Raider (fast columns, ambush momentum) or the Herald (faster rally meter).</p>
+          <p>Your <b>rival</b> has a personality and a commander of their own: Varric the Relentless (Aggressor), Lady Morwen of the Wall (Turtle), Silas Quickfinger (Opportunist) or Captain Rook (Gambler). Expect them to talk.</p>
           <h3>The map</h3>
           <p><b>Special strongholds</b> (gold badge): <b>B</b>arracks +50% growth · <b>W</b>atchtower sees far · <b>F</b>orge: your nearby battles start with +0.3 momentum · <b>S</b>hrine: +25% quick-time power nearby.</p>
           <p>Roads: green dashed <b>marsh</b> is slow (×0.65), pale <b>paved</b> roads are fast (×1.3).</p>
@@ -265,6 +280,12 @@ function buildSetup() {
     refreshSetup(true);
   });
   $('start').addEventListener('click', startGame);
+  document.querySelectorAll<HTMLElement>('#commanders button').forEach((b) =>
+    b.addEventListener('click', () => {
+      settings.commander = b.dataset.c as CommanderId;
+      refreshSetup(false);
+    }),
+  );
   $('setup-help').addEventListener('click', () => $('help').classList.remove('hidden'));
   $('training').addEventListener('click', () => {
     $('setup').classList.add('hidden');
@@ -279,6 +300,7 @@ function refreshSetup(regen: boolean) {
     seg.querySelectorAll<HTMLElement>('button').forEach((b) => b.classList.toggle('on', b.dataset.v === v));
   });
   $<HTMLInputElement>('seed').value = String(settings.seed);
+  document.querySelectorAll<HTMLElement>('#commanders button').forEach((b) => b.classList.toggle('on', b.dataset.c === settings.commander));
   if (!regen && map) return;
   map = generateMap(settings.seed, settings.nodes);
   drawPreview(map);
@@ -322,10 +344,14 @@ function drawPreview(m: GraphMap) {
 
 function startGame() {
   if (!map) map = generateMap(settings.seed, settings.nodes);
-  game = createGame(map, { fog: settings.fog === 'on' });
+  rival = settings.rival === 'random' ? RIVALS[Math.floor(Math.random() * RIVALS.length)] : settings.rival;
+  game = createGame(map, { fog: settings.fog === 'on', commanders: [settings.commander, PERSONALITIES[rival].commander] });
+  bv.perks = { volleySlow: settings.commander === 'archer', duelGrace: settings.commander === 'duelist' ? 0.1 : 0 };
+  document.querySelector('.force.foe .lbl')!.textContent = PERSONALITIES[rival].short;
+  document.querySelector('.force.foe .lbl')!.setAttribute('title', `${PERSONALITIES[rival].name} (${PERSONALITIES[rival].label})`);
   selected.clear();
   targeting = null;
-  ai = createAi(1, settings.difficulty, settings.seed);
+  ai = createAi(1, settings.difficulty, settings.seed, true, rival);
   renderer.setMap(map);
   onResize();
   paused = false;
@@ -352,7 +378,7 @@ function showEnd() {
   $('end-title').textContent = won ? 'VICTORY' : 'DEFEAT';
   $('end-title').className = `title ${won ? 'win' : 'loss'}`;
   const t = Math.floor(game.time);
-  $('end-reason').textContent = `${game.winReason} after ${Math.floor(t / 60)}:${String(t % 60).padStart(2, '0')}.`;
+  $('end-reason').textContent = `${game.winReason} after ${Math.floor(t / 60)}:${String(t % 60).padStart(2, '0')}. You led as ${COMMANDERS[settings.commander].label} against ${PERSONALITIES[rival].name} (${PERSONALITIES[rival].label}, ${COMMANDERS[PERSONALITIES[rival].commander].label}).`;
   const [a, b] = game.stats;
   const pct = (h: number, p: number) => (p ? `${Math.round((100 * h) / p)}%` : '–');
   const row = (l: string, x: string | number, y: string | number) => `<tr><td>${l}</td><td>${x}</td><td>${y}</td></tr>`;
@@ -603,12 +629,12 @@ $('newgame').addEventListener('click', () => {
   $('setup').classList.remove('hidden');
 });
 
-function toast(text: string, key: string, good = false) {
+function toast(text: string, key: string, good = false, taunt = false) {
   const k = `toast:${key}:${Math.floor(now / 2)}`;
   if (seenEvents.has(k)) return;
   seenEvents.add(k);
   const el = document.createElement('div');
-  el.className = `toast${good ? ' good' : ''}`;
+  el.className = `toast${good ? ' good' : ''}${taunt ? ' taunt' : ''}`;
   el.textContent = text;
   $('toasts').appendChild(el);
   setTimeout(() => el.remove(), 3200);
@@ -676,6 +702,11 @@ function updateHud(g: Game) {
     const key = `${e.kind}:${e.t.toFixed(2)}:${e.text}`;
     if (seenEvents.has(key)) continue;
     seenEvents.add(key);
+    // The rival speaks to you directly.
+    if (e.kind === 'taunt') {
+      toast(e.text, key, false, true);
+      continue;
+    }
     // Under fog, news only reaches you from places you can see.
     if (g.fog && !canSee(g, 0, e.x, e.y)) continue;
     if (e.kind === 'battle' && e.owner === 1) {

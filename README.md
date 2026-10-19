@@ -65,6 +65,19 @@ npm run build
     - Enemy columns, battles, alerts and the enemy totals in the HUD are hidden.
     - The AI plays under the same rules: it estimates from what it has seen and reacts only to columns it can see.
   - **AI:** values special strongholds, runs rally routes from its interior to the front, uses March on big attacks (Normal and Hard), Inspire on fights that are slipping away, and Spy under fog.
+- **Commanders and rivals (Phase 4, 2026-10-19):**
+  - **Your commander** (picked on the start screen):
+    - **The Archer:** Volleys kill 60% more, and the ring closes in 1.35 s instead of 1.0 s, so timing is easier.
+    - **The Duelist:** a successful Slash also kills 5% (scaled by quick-time power), and you win duels within 0.1 s.
+    - **The Iron Wall:** missed Parries cost nothing, and your walls are +0.2.
+    - **The Raider:** columns march 25% faster, and your road ambushes start at +0.5 momentum.
+    - **The Herald:** the rally meter fills 40% faster.
+  - **Rival personalities** (pick one or Random), each with its own commander and taunts shown as toasts:
+    - **Varric the Relentless** (Aggressor, Raider): more and bolder attacks, thin reserves.
+    - **Lady Morwen of the Wall** (Turtle, Iron Wall): cautious against your walls, but claims neutral ground. Holding off a real assault triggers a 12 s counterattack.
+    - **Silas Quickfinger** (Opportunist, Archer): favours and presses targets away from where your commander is fighting.
+    - **Captain Rook** (Gambler, Herald): unpredictable odds, sometimes throws everything at one target.
+  - **Balance check** (AI vs AI, 48 games each, Normal): every personality won between 37% and 63%. The Aggressor starts about 1.5× as many attacks as the Turtle. The Opportunist ranks lowest against other AIs, because its edge (punishing a busy commander) mostly applies to a human spending time in battles.
 - **Training** (start screen): pick any of the six events (including Duel and Pursuit), read the steps, **watch a demo** where a ghost cursor performs it, then **practise** it on repeat with hits, misses and a streak counter.
 - **Enemy commander:** the AI plays the same quick-time events, one battle at a time, with a switching delay and a success rate set by difficulty (easy 55%, normal 70%, hard 82%). It deliberately attacks where your commander is not.
 - **Winning:** take the enemy capital. A 12-minute war clock breaks deadlocks: at zero, whoever holds more strongholds wins, with total troops as the tiebreak.
@@ -86,7 +99,7 @@ Every player action is a plain function on the simulation: `sendTroops` (with st
 
 ## Verification (2026-10-18)
 
-- `npm test`: 34 passing (Phase 3 added `tests/phase3.test.ts`: symmetric specials and roads, barracks/forge/shrine effects, road and Forced March speeds, rally routes, ability cooldowns, fog visibility and memory, and AI wars finishing with fog on). Phase 1 added tests for rally/finisher, retreat (attacker and defender), stances, rout and duel/pursuit, plus checks that both AIs use finishers and retreats in the 20-map sweep. Covers:
+- `npm test`: 40 passing (Phase 4 added `tests/phase4.test.ts`: each commander effect, every personality finishing against every other, and the Aggressor starting more attacks than the Turtle. Phase 3 added `tests/phase3.test.ts`: symmetric specials and roads, barracks/forge/shrine effects, road and Forced March speeds, rally routes, ability cooldowns, fog visibility and memory, and AI wars finishing with fog on). Phase 1 added tests for rally/finisher, retreat (attacker and defender), stances, rout and duel/pursuit, plus checks that both AIs use finishers and retreats in the 20-map sweep. Covers:
   - map generation for every size (connected, symmetric, capitals at least 3 roads apart) and determinism
   - garrison growth and caps, capture, battle length, wall bonus and road interception
   - quick-time successes flipping a losing fight
