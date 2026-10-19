@@ -12,8 +12,8 @@ export const BASE_LOSS = 0.6;
 export const PER_TROOP_LOSS = 0.045;
 export const MOMENTUM_MIN = 0.5;
 export const MOMENTUM_MAX = 4;
-/** Multiplier on every quick-time success (tripled after playtest feedback, 2026-10-19). */
-export const QTE_POWER = 3;
+/** Multiplier on every quick-time success (2.5x after playtest feedback, 2026-10-19). */
+export const QTE_POWER = 2.5;
 /** Momentum drifts back toward 1 at this rate per second. */
 export const MOMENTUM_DECAY = 0.06;
 /** War clock: when it runs out, whoever holds more strongholds wins (troops break ties). */

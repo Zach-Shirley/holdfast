@@ -18,12 +18,12 @@ npm run build
 - **Strongholds:** capital (grows 1.0/s, cap 70, walls ×1.5), fort (0.35/s, cap 60, walls ×1.4), village (0.75/s, cap 50, no walls). Troops above a cap slowly desert. Maps are point-symmetric, so both sides are equal.
 - **Moving troops:** drag from your stronghold to any other. The dock sets 25/50/75/100%. Columns follow the roads and pass through your own strongholds. Two enemy columns meeting on a road fight there.
 - **Battles:** each side loses `(0.6 + 0.045 × enemy troops) × enemy momentum × enemy walls` troops per second. An even fight lasts about 10–30 s. Reinforcements arriving at a battle join it.
-- **Quick-time power:** every success effect is tripled (`QTE_POWER = 3`, after Zach's 2026-10-19 playtest); miss penalties are unchanged. Momentum is capped at 4×.
+- **Quick-time power:** every success effect is multiplied by 2.5 (`QTE_POWER = 2.5`, after Zach's 2026-10-19 playtest); miss penalties are unchanged. Momentum is capped at 4×.
 - **Battle view** (click the crossed swords or a battle in the dock): full screen, and the war keeps running. Quick-time events come one after another, mouse only:
-  - **Volley:** click the target as the closing ring meets it. Kills about 21% of the enemy, plus 3.
-  - **Parry:** click the incoming spear before it reaches your shield. A hit gives +0.45 momentum; a miss costs you about 7%.
-  - **Slash:** drag from the start mark to the ring along the line. +0.9 momentum.
-  - **Banner:** hold the mouse on the moving banner for 1 s. Kills about 12%, plus 3, and +0.45 momentum.
+  - **Volley:** click the target as the closing ring meets it. Kills about 18% of the enemy, plus 2–3.
+  - **Parry:** click the incoming spear before it reaches your shield. A hit gives +0.375 momentum; a miss costs you about 7%.
+  - **Slash:** drag from the start mark to the ring along the line. +0.75 momentum.
+  - **Banner:** hold the mouse on the moving banner for 1 s. Kills about 10%, plus 2–3, and +0.375 momentum.
   - Leave with Esc, right-click or the button, or jump straight to another battle from the side list.
   - Misses explain themselves (for example "Too early: wait until the white ring touches the target"), and a click in the wrong place gives a hint instead of a miss.
 - **Training** (start screen): pick any of the four events, read the steps, **watch a demo** where a ghost cursor performs it, then **practise** it on repeat with hits, misses and a streak counter.

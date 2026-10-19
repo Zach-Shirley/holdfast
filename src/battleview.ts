@@ -48,7 +48,7 @@ export const DRILLS: Record<QteKind, { name: string; color: string; steps: strin
       'Click the target the moment the white ring touches its orange edge.',
       'Clicking too early or too late is a miss. Clicks off the target are ignored.',
     ],
-    effect: 'Kills about 21% of the enemy troops in the battle (plus 3).',
+    effect: 'Kills about 18% of the enemy troops in the battle (plus 2–3).',
     tip: 'Watch the ring, not the target. The target glows brighter while you are inside the timing window.',
   },
   parry: {
@@ -59,7 +59,7 @@ export const DRILLS: Record<QteKind, { name: string; color: string; steps: strin
       'Click the spear head (inside the flashing circle) any time before it reaches the shield.',
       'There is no "too early": click it as soon as you see it.',
     ],
-    effect: 'Hit: a big momentum boost (your side fights about 45% harder, fading over time). Miss: the charge kills about 7% of your troops.',
+    effect: 'Hit: a momentum boost (your side fights about 38% harder, fading over time). Miss: the charge kills about 7% of your troops.',
     tip: 'The spear comes from a random direction. Move your mouse toward it straight away.',
   },
   slash: {
@@ -70,7 +70,7 @@ export const DRILLS: Record<QteKind, { name: string; color: string; steps: strin
       'Press and hold the mouse on the filled dot.',
       'Keep holding and drag along the dashes into the ring. Letting go early or straying far off the line is a miss.',
     ],
-    effect: 'Your side fights about 90% harder, fading over time (momentum).',
+    effect: 'Your side fights about 75% harder, fading over time (momentum).',
     tip: 'You have over 2 seconds: a steady drag beats a fast flick.',
   },
   banner: {
@@ -81,7 +81,7 @@ export const DRILLS: Record<QteKind, { name: string; color: string; steps: strin
       'Press and hold the mouse button with the cursor on the banner.',
       'Follow it while holding until the gold ring around it fills (about 1 second in total).',
     ],
-    effect: 'Kills about 12% of the enemy (plus 3) and adds a big momentum boost.',
+    effect: 'Kills about 10% of the enemy (plus 2–3) and adds a momentum boost.',
     tip: 'Time only counts while the button is down and the cursor is on the banner. Slipping off just pauses the ring.',
   },
 };
