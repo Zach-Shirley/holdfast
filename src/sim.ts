@@ -56,7 +56,7 @@ export const RALLY_RESERVE = 5;
 export type CommanderId = 'none' | 'archer' | 'duelist' | 'ironwall' | 'raider' | 'herald';
 export const COMMANDERS: Record<CommanderId, { label: string; title: string; desc: string }> = {
   none: { label: 'No commander', title: '', desc: 'Plain rules.' },
-  archer: { label: 'The Archer', title: 'Master of the volley', desc: 'Volleys kill 60% more, and the Volley ring closes more slowly (easier timing).' },
+  archer: { label: 'The Archer', title: 'Master of the volley', desc: 'Volleys kill 60% more. Your Volley ring eases in as it nears the target and holds for a split second at the perfect moment.' },
   duelist: { label: 'The Duelist', title: 'Blade in hand', desc: 'A successful Slash also cuts down troops. You win duels by a 0.1 s margin.' },
   ironwall: { label: 'The Iron Wall', title: 'Unbreakable', desc: 'A missed Parry costs nothing. Your walls are 0.2 stronger.' },
   raider: { label: 'The Raider', title: 'Fast and hungry', desc: 'Your columns march 25% faster, and your road ambushes start with +0.5 momentum.' },
@@ -508,7 +508,19 @@ function endBattle(g: Game, b: Battle) {
 }
 
 /** Apply a quick-time event result for `owner` in battle `battleId`. Shared by the player and the AI. */
+function logQte(g: Game, b: Battle, owner: Player, text: string) {
+  if (text) event(g, { kind: 'qte', text, owner, x: b.x, y: b.y, battleId: b.id });
+}
+
+/** Apply a quick-time event result for `owner` in battle `battleId`. Shared by the player and the AI. */
 export function applyQte(g: Game, battleId: number, owner: Player, kind: QteKind, success: boolean): string {
+  const text = qteEffect(g, battleId, owner, kind, success);
+  const b = getBattle(g, battleId);
+  if (b) logQte(g, b, owner, text);
+  return text;
+}
+
+function qteEffect(g: Game, battleId: number, owner: Player, kind: QteKind, success: boolean): string {
   const b = getBattle(g, battleId);
   const me = b && sideOf(b, owner);
   g.stats[owner].qtePlayed++;
@@ -665,6 +677,11 @@ export function applyDuel(g: Game, battleId: number, winner: Player): string {
 }
 
 /** Pursuit of a routing enemy: each fleeing soldier caught kills a slice of them. */
+/** A Pursuit is on once any enemy side has fallen below half its peak strength. */
+export function pursuitReady(b: Battle, owner: Owner): boolean {
+  return b.sides.some((s) => s.owner !== owner && s.troops > 0.5 && (b.peak[s.owner] ?? 0) >= 8 && s.troops < (b.peak[s.owner] ?? 0) * 0.5);
+}
+
 export function applyPursuit(g: Game, battleId: number, owner: Player, hits: number): string {
   const b = getBattle(g, battleId);
   const me = b && sideOf(b, owner);
@@ -673,7 +690,11 @@ export function applyPursuit(g: Game, battleId: number, owner: Player, hits: num
   if (!b || !me || b.endedAt !== null || hits <= 0) return hits <= 0 ? 'They got away' : '';
   me.rally = Math.min(1, me.rally + RALLY_PER_HIT);
   const shrine = specialNear(g, owner, battleNodes(b), 'shrine') ? SHRINE_POWER : 1;
-  return `Pursuit: ${killEnemies(b, owner, 0.05 * hits, QTE_POWER * shrine)} cut down`;
+  // Each caught runner is worth more when the enemy is truly routing.
+  const per = b.sides.some((x) => x.owner !== owner && isRouting(b, x)) ? 0.05 : 0.035;
+  const text = `Pursuit: ${killEnemies(b, owner, per * hits, QTE_POWER * shrine)} cut down`;
+  logQte(g, b, owner, text);
+  return text;
 }
 
 /** Every troop a player has: garrisons, columns and soldiers in battles. */

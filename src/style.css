@@ -940,3 +940,42 @@ h3.gap {
 .force span {
   white-space: nowrap;
 }
+
+/* ---------- Watch mode ---------- */
+.watch-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  margin-top: 14px;
+  font-size: 13px;
+  color: var(--muted);
+}
+.spectator {
+  position: fixed;
+  left: 12px;
+  right: 12px;
+  bottom: 12px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 14px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  z-index: 5;
+  font-size: 13px;
+}
+.spectator .lbl {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  color: var(--muted);
+}
+.spectator #spec-stop {
+  margin-left: auto;
+}
+.bv.spectating .bv-rally,
+.bv.spectating .bv-retreat {
+  display: none;
+}

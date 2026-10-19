@@ -1,7 +1,7 @@
 import { NODE_STATS } from './map';
 import { OWNER_COLOR, OWNER_DARK, OWNER_LIGHT } from './render';
 import { setBattleAmbience, sfx, spearWhoosh, volleyTone, type Voice } from './sound';
-import { STANCES, activeBattles, battleName, battleNodes, canSee, getBattle, inDuel, isRouting, sideDefense, sideOf, specialNear, type Battle, type Game, type Owner, type QteKind } from './sim';
+import { STANCES, activeBattles, battleName, battleNodes, canSee, pursuitReady, getBattle, inDuel, isRouting, sideDefense, sideOf, specialNear, type Battle, type Game, type Owner, type QteKind } from './sim';
 
 /** Everything the battle view can throw at you: the four basics plus situational events. */
 export type ViewKind = QteKind | 'duel' | 'pursuit';
@@ -162,10 +162,33 @@ export class BattleView {
   private lastDuel = -99;
   /** Quick-time speed from settings: 0.8 slower, 1.2 faster. */
   timeScale = 1;
+  /** Watch mode: no quick-time events for you; both commanders' results are shown instead. */
+  spectating = false;
+  names: [string, string] = ['You', 'Enemy'];
+  private seenQte = new Set<string>();
   /** Your commander's battle perks: the Archer's slower Volley ring, the Duelist's duel margin. */
-  perks = { volleySlow: false, duelGrace: 0 };
+  perks = { volleyEase: false, duelGrace: 0 };
   private get volleyHit() {
-    return this.perks.volleySlow ? 1.35 : VOLLEY_HIT;
+    return VOLLEY_HIT;
+  }
+  /** Archer: the ring holds still this long at the perfect moment. */
+  private get volleyPause() {
+    return this.perks.volleyEase ? 0.14 : 0;
+  }
+  /** Centre of the Volley timing window (the middle of the Archer's pause). */
+  private get volleyCentre() {
+    return this.volleyHit + this.volleyPause / 2;
+  }
+  /**
+   * How far the Volley ring has closed: 0 at the start, 1 touching the target.
+   * Normally linear. For the Archer it starts faster, eases in, and pauses at 1.
+   */
+  private ringProgress(t: number): number {
+    const T = this.volleyHit;
+    if (!this.perks.volleyEase) return t / T;
+    if (t < T) return 1 - Math.pow(1 - t / T, 2.2);
+    if (t < T + this.volleyPause) return 1;
+    return 1 + (t - T - this.volleyPause) / T;
   }
   private voice: Voice | null = null;
   private bannerTick = 0;
@@ -382,7 +405,9 @@ export class BattleView {
     if (!g || !b) return 'volley';
     if (inDuel(g, b) && this.now - this.lastDuel >= DUEL_EVERY) return 'duel';
     const foes = b.sides.filter((s) => s.owner !== 0 && s.troops > 0.5);
-    if (foes.some((f) => isRouting(b, f)) && this.last !== 'pursuit') return 'pursuit';
+    // Pursuit: likely against a rout, fairly common once the enemy is below half strength.
+    const routing = foes.some((f) => isRouting(b, f));
+    if (this.last !== 'pursuit' && (routing ? Math.random() < 0.6 : pursuitReady(b, 0) && Math.random() < 0.4)) return 'pursuit';
     const stance = sideOf(b, 0)?.stance;
     const favoured: QteKind | null = stance === 'assault' ? 'slash' : stance === 'hold' ? 'parry' : stance === 'skirmish' ? 'volley' : null;
     const pool = (['volley', 'parry', 'slash', 'banner'] as QteKind[]).filter((k) => k !== this.last);
@@ -495,8 +520,9 @@ export class BattleView {
     if (q.kind === 'volley') {
       // Clicks off the target are ignored (with a hint), so a stray click never costs you.
       if (Math.hypot(x - q.x, y - q.y) > VOLLEY_R + 24) return this.hint('Click on the target itself');
-      const early = q.t < this.volleyHit - VOLLEY_WINDOW;
-      const ok = Math.abs(q.t - this.volleyHit) <= VOLLEY_WINDOW;
+      const half = VOLLEY_WINDOW + this.volleyPause / 2;
+      const early = q.t < this.volleyCentre - half;
+      const ok = Math.abs(q.t - this.volleyCentre) <= half;
       this.resolve(ok, q.x, q.y, early ? 'Too early: wait until the white ring touches the target' : 'Too late: click as the rings meet');
     } else if (q.kind === 'parry') {
       const p = this.parryPos(q);
@@ -553,14 +579,30 @@ export class BattleView {
     this.tickCommon(dt);
     const b = getBattle(g, this.battleId);
     if (!b) return this.hooks.onLeave();
-    if (b.endedAt !== null || !sideOf(b, 0) || sideOf(b, 0)!.troops <= 0.5) {
+    const gone = this.spectating ? b.endedAt !== null : b.endedAt !== null || !sideOf(b, 0) || sideOf(b, 0)!.troops <= 0.5;
+    if (gone) {
       // Battle over (or our side is gone): show the result briefly, then go back to the map.
       this.qte = null;
       this.endShownAt ??= this.now;
       if (this.now - this.endShownAt > 1.6) this.hooks.onLeave();
       return;
     }
-    this.tickQte(dt, g);
+    if (!this.spectating) this.tickQte(dt, g);
+    else this.showCommanders(g, b);
+  }
+
+  /** Observer: float each commander's quick-time results over their own army. */
+  private showCommanders(g: Game, b: Battle) {
+    for (const e of g.events) {
+      if (e.kind !== 'qte' && e.kind !== 'finisher' && e.kind !== 'duel') continue;
+      if (e.battleId !== b.id) continue;
+      const key = `${e.t}:${e.text}`;
+      if (this.seenQte.has(key)) continue;
+      this.seenQte.add(key);
+      const left = e.owner === 0;
+      const c = this.center();
+      this.floaters.push({ text: `${this.names[left ? 0 : 1]}: ${e.text}`, x: c.x + (left ? -1 : 1) * this.w * 0.18, y: c.y + (Math.random() - 0.5) * 120, t: 0, good: left });
+    }
   }
 
   private tickCommon(dt: number) {
@@ -600,7 +642,7 @@ export class BattleView {
     else if (q.kind === 'pursuit' && q.t >= PURSUIT_TIME) {
       const hits = q.runners.filter((r) => r.hit).length;
       this.resolve(hits > 0, this.center().x, this.center().y, hits ? undefined : 'They got away: click the runners as they flee', hits);
-    } else if (q.kind === 'volley' && q.t > (this.volleyHit + VOLLEY_WINDOW + 0.05)) this.resolve(false, q.x, q.y, 'Missed: click the target as the rings meet');
+    } else if (q.kind === 'volley' && q.t > this.volleyHit + this.volleyPause + VOLLEY_WINDOW + 0.05) this.resolve(false, q.x, q.y, 'Missed: click the target as the rings meet');
     else if (q.kind === 'parry' && q.t >= PARRY_TIME) {
       const c = this.center();
       this.resolve(false, c.x, c.y, 'Too slow: click the spear before it hits your shield');
@@ -635,7 +677,7 @@ export class BattleView {
     };
     if (q.kind === 'volley') {
       glide(q.x, q.y);
-      if (q.t >= this.volleyHit - 0.03) {
+      if (q.t >= this.volleyCentre - 0.03) {
         click(q.x, q.y);
         this.press();
       }
@@ -753,7 +795,7 @@ export class BattleView {
       ctx.fillStyle = `rgba(255,230,200,${this.flash})`;
       ctx.fillRect(0, 0, this.w, this.h);
     }
-    if (!this.practice && g) this.drawPressure(g, b);
+    if (!this.practice && !this.spectating && g) this.drawPressure(g, b);
     if (this.demo) this.drawCursor();
     if (!this.practice && g) this.updateDom(g, b);
   }
@@ -945,8 +987,8 @@ export class BattleView {
     const { ctx } = this;
     ctx.lineCap = 'round';
     if (q.kind === 'volley') {
-      const ring = VOLLEY_R * (1 + 2.4 * Math.max(-0.4, 1 - q.t / this.volleyHit));
-      const inWindow = Math.abs(q.t - this.volleyHit) <= VOLLEY_WINDOW;
+      const ring = VOLLEY_R * (1 + 2.4 * Math.max(-0.4, 1 - this.ringProgress(q.t)));
+      const inWindow = Math.abs(q.t - this.volleyCentre) <= VOLLEY_WINDOW + this.volleyPause / 2;
       ctx.fillStyle = inWindow ? 'rgba(255,169,77,0.35)' : 'rgba(255,169,77,0.15)';
       ctx.strokeStyle = '#ffa94d';
       ctx.lineWidth = 4;
@@ -1192,14 +1234,21 @@ export class BattleView {
     e.rc.textContent = String(Math.ceil(right.troops));
     const me = sideOf(b, 0);
     const tag = (s: typeof me) => (s?.stance ? ` · ${STANCES[s.stance].label}` : '') + (s && sideDefense(g, b, s) > 1 ? ` · walls ×${sideDefense(g, b, s)}` : '') + (s && isRouting(b, s) ? ' · ROUTING' : '') + (s && specialNear(g, s.owner, battleNodes(b), 'shrine') ? ' · Shrine +25%' : '');
-    e.lm.textContent = `You${tag(me)}`;
+    e.lm.textContent = `${this.names[0]}${tag(me)}`;
     const foe = b.sides.find((s) => s.owner === right.owner);
-    e.rm.textContent = `${right.owner === 2 ? 'Neutral' : 'Enemy'}${tag(foe)}`;
+    e.rm.textContent = `${right.owner === 2 ? 'Neutral' : this.names[1]}${tag(foe)}`;
     const pct = (m: number) => `${Math.max(0, Math.min(100, ((m - 0.5) / 3.5) * 100))}%`;
     e.lb.style.width = pct(left.momentum);
     e.rb.style.width = pct(right.momentum);
-    e.cmdr.classList.toggle('hidden', g.presence[1] !== b.id);
-    e.cmdr.textContent = inDuel(g, b) ? 'DUEL: the enemy commander is here. Watch for the signal!' : 'Enemy commander is here';
+    const here = this.spectating ? [g.presence[0] === b.id, g.presence[1] === b.id] : [false, g.presence[1] === b.id];
+    e.cmdr.classList.toggle('hidden', !here[0] && !here[1]);
+    e.cmdr.textContent = this.spectating
+      ? here[0] && here[1]
+        ? 'Both commanders are here'
+        : `${this.names[here[0] ? 0 : 1]}\'s commander is here`
+      : inDuel(g, b)
+        ? 'DUEL: the enemy commander is here. Watch for the signal!'
+        : 'Enemy commander is here';
     // Rally meter, finisher and retreat.
     const rally = me?.rally ?? 0;
     e.rallyfill.style.width = `${rally * 100}%`;
@@ -1208,15 +1257,16 @@ export class BattleView {
     const canRetreat = !!me && me.troops > 0.5 && this.hooks.canRetreat(b.id);
     (e.retreat as HTMLButtonElement).disabled = !canRetreat;
     e.retreat.classList.toggle('urgent', !!me && isRouting(b, me) && canRetreat);
-    const over = b.endedAt !== null || !me || me.troops <= 0.5;
+    const over = this.spectating ? b.endedAt !== null : b.endedAt !== null || !me || me.troops <= 0.5;
     e.result.classList.toggle('hidden', !over);
+    this.root.classList.toggle('spectating', this.spectating);
     if (over) {
       const won = b.winner === 0;
-      e.result.textContent = won ? 'Victory' : b.nodeId !== null && g.nodes[b.nodeId].owner === 0 && b.winner === null ? 'Held' : 'Defeat';
+      e.result.textContent = this.spectating ? `${b.winner === 0 ? this.names[0] : b.winner === 1 ? this.names[1] : 'Neutral'} wins` : won ? 'Victory' : b.nodeId !== null && g.nodes[b.nodeId].owner === 0 && b.winner === null ? 'Held' : 'Defeat';
       e.result.className = `bv-result ${won ? 'win' : 'loss'}`;
     }
     // Other battles involving you.
-    const others = activeBattles(g).filter((o) => o.id !== b.id && (sideOf(o, 0)?.troops ?? 0) > 0.5);
+    const others = activeBattles(g).filter((o) => o.id !== b.id && (this.spectating || (sideOf(o, 0)?.troops ?? 0) > 0.5));
     e.others.innerHTML = others.length
       ? others
           .map((o) => {

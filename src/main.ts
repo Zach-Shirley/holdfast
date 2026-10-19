@@ -44,8 +44,16 @@ interface Settings {
   fog: 'off' | 'on';
   commander: CommanderId;
   rival: Personality | 'random';
+  /** Watch mode: the AI on your (left/red) side. */
+  watchLeft: Personality | 'random';
 }
-const settings: Settings = { nodes: 8, difficulty: 'normal', seed: randomSeed(), fog: 'off', commander: 'archer', rival: 'random' };
+const settings: Settings = { nodes: 8, difficulty: 'normal', seed: randomSeed(), fog: 'off', commander: 'archer', rival: 'random', watchLeft: 'random' };
+/** Watch mode: two AIs fight and you observe. */
+let spectating = false;
+let ai0: AiState | null = null;
+let leftRival: Personality = 'turtle';
+let watchSpeed = 1;
+const names = (): [string, string] => (spectating ? [PERSONALITIES[leftRival].short, PERSONALITIES[rival].short] : ['You', PERSONALITIES[rival].short]);
 /** The rival actually facing you this war (Random resolves at start). */
 let rival: Personality = 'aggressor';
 const RIVALS: Personality[] = ['aggressor', 'turtle', 'opportunist', 'gambler'];
@@ -91,6 +99,13 @@ app.innerHTML = `
     <div class="seg" id="abilities">${(Object.keys(ABILITIES) as Ability[]).map((k) => `<button data-a="${k}" title="${ABILITIES[k].desc}">${ABILITIES[k].label}<small></small></button>`).join('')}</div>
     <div class="battles" id="battle-list"></div>
   </div>
+  <div class="spectator hidden" id="spectator">
+    <span class="lbl">Watching</span><b id="spec-names"></b>
+    <span class="lbl">Speed</span>
+    <div class="seg" id="spec-speed"><button data-x="1">1×</button><button data-x="2">2×</button><button data-x="4">4×</button></div>
+    <span class="muted">Click any battle to watch it</span>
+    <button id="spec-stop">Stop watching</button>
+  </div>
   <div class="tip hidden" id="tip"></div>
   <div class="toasts" id="toasts"></div>
   <div class="paused hidden" id="paused">Paused</div>
@@ -119,6 +134,7 @@ app.innerHTML = `
       <h3 class="gap">Your commander</h3>
       <div class="commanders" id="commanders">${PLAYABLE.map((c) => `<button data-c="${c}"><b>${COMMANDERS[c].label}</b><i>${COMMANDERS[c].title}</i><span>${COMMANDERS[c].desc}</span></button>`).join('')}</div>
       <div class="actions"><button class="primary" id="start">Start war</button><button id="training">Training: learn the quick-time events</button><button id="setup-help">How to play</button><button id="setup-settings">Settings</button></div>
+      <div class="watch-row"><span>Watch two AIs fight (you observe):</span><div class="seg" data-key="watchLeft"><button data-v="random">Random</button>${RIVALS.map((p) => `<button data-v="${p}">${PERSONALITIES[p].label}</button>`).join('')}</div><span class="muted">vs the Rival above</span><button id="watch">Watch AI vs AI</button></div>
     </div>
   </section>
 
@@ -279,7 +295,19 @@ function buildSetup() {
     settings.seed = randomSeed();
     refreshSetup(true);
   });
-  $('start').addEventListener('click', startGame);
+  $('start').addEventListener('click', () => startGame(false));
+  $('watch').addEventListener('click', () => startGame(true));
+  document.querySelectorAll<HTMLElement>('#spec-speed button').forEach((b) => b.addEventListener('click', () => setWatchSpeed(Number(b.dataset.x))));
+  $('spec-stop').addEventListener('click', () => {
+    bv.hide();
+    game = null;
+    spectating = false;
+    document.querySelector('.hud-top')!.classList.add('hidden');
+    $('spectator').classList.add('hidden');
+    setMusic(false);
+    refreshSetup(false);
+    $('setup').classList.remove('hidden');
+  });
   document.querySelectorAll<HTMLElement>('#commanders button').forEach((b) =>
     b.addEventListener('click', () => {
       settings.commander = b.dataset.c as CommanderId;
@@ -342,11 +370,25 @@ function drawPreview(m: GraphMap) {
 
 // ---------- Lifecycle ----------
 
-function startGame() {
+function startGame(watch = false) {
   if (!map) map = generateMap(settings.seed, settings.nodes);
+  spectating = watch;
   rival = settings.rival === 'random' ? RIVALS[Math.floor(Math.random() * RIVALS.length)] : settings.rival;
-  game = createGame(map, { fog: settings.fog === 'on', commanders: [settings.commander, PERSONALITIES[rival].commander] });
-  bv.perks = { volleySlow: settings.commander === 'archer', duelGrace: settings.commander === 'duelist' ? 0.1 : 0 };
+  if (watch) {
+    leftRival = settings.watchLeft === 'random' ? RIVALS[Math.floor(Math.random() * RIVALS.length)] : settings.watchLeft;
+    ai0 = createAi(0, settings.difficulty, settings.seed + 7, true, leftRival);
+    watchSpeed = 1;
+    setWatchSpeed(1);
+  } else ai0 = null;
+  const myCommander = watch ? PERSONALITIES[leftRival].commander : settings.commander;
+  // No fog while watching: an observer sees the whole war.
+  game = createGame(map, { fog: !watch && settings.fog === 'on', commanders: [myCommander, PERSONALITIES[rival].commander] });
+  bv.spectating = watch;
+  bv.names = names();
+  document.querySelector('.force.you .lbl')!.textContent = names()[0];
+  $('spec-names').textContent = `${PERSONALITIES[leftRival].name} (${PERSONALITIES[leftRival].label}) vs ${PERSONALITIES[rival].name} (${PERSONALITIES[rival].label})`;
+  $('spectator').classList.toggle('hidden', !watch);
+  bv.perks = { volleyEase: settings.commander === 'archer', duelGrace: settings.commander === 'duelist' ? 0.1 : 0 };
   document.querySelector('.force.foe .lbl')!.textContent = PERSONALITIES[rival].short;
   document.querySelector('.force.foe .lbl')!.setAttribute('title', `${PERSONALITIES[rival].name} (${PERSONALITIES[rival].label})`);
   selected.clear();
@@ -364,8 +406,13 @@ function startGame() {
   $('end').classList.add('hidden');
   $('paused').classList.add('hidden');
   document.querySelector('.hud-top')!.classList.remove('hidden');
-  $('dock').classList.remove('hidden');
+  $('dock').classList.toggle('hidden', watch);
   setMusic(true);
+}
+
+function setWatchSpeed(x: number) {
+  watchSpeed = x;
+  document.querySelectorAll<HTMLElement>('#spec-speed button').forEach((b) => b.classList.toggle('on', Number(b.dataset.x) === x));
 }
 
 function showEnd() {
@@ -374,16 +421,21 @@ function showEnd() {
   game.presence[0] = null;
   const won = game.winner === 0;
   setMusic(false);
-  sfx(won ? 'victory' : 'defeat');
-  $('end-title').textContent = won ? 'VICTORY' : 'DEFEAT';
-  $('end-title').className = `title ${won ? 'win' : 'loss'}`;
+  sfx(won || spectating ? 'victory' : 'defeat');
+  const [n0, n1] = names();
+  $('end-title').textContent = spectating ? `${game.winner === 0 ? n0 : n1} wins`.toUpperCase() : won ? 'VICTORY' : 'DEFEAT';
+  $('end-title').className = `title ${won || spectating ? 'win' : 'loss'}`;
   const t = Math.floor(game.time);
-  $('end-reason').textContent = `${game.winReason} after ${Math.floor(t / 60)}:${String(t % 60).padStart(2, '0')}. You led as ${COMMANDERS[settings.commander].label} against ${PERSONALITIES[rival].name} (${PERSONALITIES[rival].label}, ${COMMANDERS[PERSONALITIES[rival].commander].label}).`;
+  if (spectating) {
+    const loser = (1 - (game.winner ?? 0)) as 0 | 1;
+    const how = game.nodes[game.map.capitals[loser]].owner === game.winner ? 'took the enemy capital' : game.time >= MATCH_TIME ? 'held more ground when the war clock ran out' : 'wiped out the enemy';
+    $('end-reason').textContent = `${game.winner === 0 ? PERSONALITIES[leftRival].name : PERSONALITIES[rival].name} ${how} after ${Math.floor(t / 60)}:${String(t % 60).padStart(2, '0')}.`;
+  } else $('end-reason').textContent = `${game.winReason} after ${Math.floor(t / 60)}:${String(t % 60).padStart(2, '0')}. You led as ${COMMANDERS[settings.commander].label} against ${PERSONALITIES[rival].name} (${PERSONALITIES[rival].label}, ${COMMANDERS[PERSONALITIES[rival].commander].label}).`;
   const [a, b] = game.stats;
   const pct = (h: number, p: number) => (p ? `${Math.round((100 * h) / p)}%` : '–');
   const row = (l: string, x: string | number, y: string | number) => `<tr><td>${l}</td><td>${x}</td><td>${y}</td></tr>`;
   $('end-stats').innerHTML =
-    '<tr><th></th><th>You</th><th>Enemy</th></tr>' +
+    `<tr><th></th><th>${n0}</th><th>${n1}</th></tr>` +
     row('Battles fought / won', `${a.battlesFought} / ${a.battlesWon}`, `${b.battlesFought} / ${b.battlesWon}`) +
     row('Quick-time events', `${a.qteHit} / ${a.qtePlayed} (${pct(a.qteHit, a.qtePlayed)})`, `${b.qteHit} / ${b.qtePlayed} (${pct(b.qteHit, b.qtePlayed)})`) +
     row('Charges / retreats', `${a.finishers} / ${a.retreats}`, `${b.finishers} / ${b.retreats}`) +
@@ -396,17 +448,17 @@ function showEnd() {
 function enterBattle(id: number) {
   if (!game || game.winner !== null) return;
   const b = getBattle(game, id);
-  if (!b || b.endedAt !== null || (sideOf(b, 0)?.troops ?? 0) <= 0.5) {
+  if (!b || b.endedAt !== null || (!spectating && (sideOf(b, 0)?.troops ?? 0) <= 0.5)) {
     toast('You have no troops in that battle', 'notin');
     return;
   }
   drag = null;
-  game.presence[0] = id;
+  if (!spectating) game.presence[0] = id;
   bv.show(id);
 }
 
 function leaveBattle() {
-  if (game) game.presence[0] = null;
+  if (game && !spectating) game.presence[0] = null;
   bv.hide();
 }
 
@@ -443,6 +495,14 @@ function useTargeted(sx: number, sy: number) {
 canvas.addEventListener('contextmenu', (e) => e.preventDefault());
 canvas.addEventListener('mousedown', (e) => {
   if (!game || game.winner !== null) return;
+  if (spectating) {
+    if (e.button !== 0) return;
+    const bid = renderer.battleAt(game, e.offsetX, e.offsetY);
+    const n = renderer.nodeAt(game, e.offsetX, e.offsetY);
+    const id = bid ?? (n !== null ? game.nodes[n].battleId : null);
+    if (id !== null) enterBattle(id);
+    return;
+  }
   const x = e.offsetX;
   const y = e.offsetY;
   if (targeting) {
@@ -618,8 +678,9 @@ function togglePause() {
 $('btn-pause').addEventListener('click', togglePause);
 $('btn-help').addEventListener('click', () => $('help').classList.toggle('hidden'));
 $('help-close').addEventListener('click', () => $('help').classList.add('hidden'));
-$('rematch').addEventListener('click', startGame);
+$('rematch').addEventListener('click', () => startGame(spectating));
 $('newgame').addEventListener('click', () => {
+  $('spectator').classList.add('hidden');
   $('end').classList.add('hidden');
   document.querySelector('.hud-top')!.classList.add('hidden');
   $('dock').classList.add('hidden');
@@ -707,6 +768,12 @@ function updateHud(g: Game) {
       toast(e.text, key, false, true);
       continue;
     }
+    if (spectating) {
+      const [n0, n1] = names();
+      const place = /took (.+)$/.exec(e.text)?.[1] ?? /^(.+) has fallen$/.exec(e.text)?.[1];
+      if ((e.kind === 'captured' || e.kind === 'lost') && place) toast(`${e.kind === 'lost' || e.owner === 1 ? n1 : n0} took ${place}`, key, e.owner === 0);
+      continue;
+    }
     // Under fog, news only reaches you from places you can see.
     if (g.fog && !canSee(g, 0, e.x, e.y)) continue;
     if (e.kind === 'battle' && e.owner === 1) {
@@ -753,8 +820,9 @@ function tick(dt: number) {
     return;
   }
   if (!paused && game.winner === null) {
-    acc += dt;
+    acc += dt * (spectating ? watchSpeed : 1);
     while (acc >= STEP) {
+      if (ai0) aiStep(game, ai0, STEP);
       aiStep(game, ai, STEP);
       step(game, STEP);
       acc -= STEP;
@@ -763,7 +831,7 @@ function tick(dt: number) {
   }
   if (bv.open) bv.render(game);
   else {
-    const ui = { hover, drag, now, selected, box, rallyDrag, targeting };
+    const ui = { hover, drag, now, selected, box, rallyDrag, targeting, spectate: spectating, names: names() };
     renderer.draw(game, ui);
     renderer.drawOverlay(ui);
   }

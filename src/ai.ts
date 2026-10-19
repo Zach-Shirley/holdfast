@@ -9,7 +9,9 @@ import {
   useAbility,
   MATCH_TIME,
   activeBattles,
+  applyPursuit,
   applyQte,
+  pursuitReady,
   event,
   type CommanderId,
   getBattle,
@@ -453,8 +455,12 @@ function commander(g: Game, ai: AiState, dt: number) {
   if (ai.qteT <= 0) {
     ai.qteT = L.qteEvery * (0.8 + ai.rng() * 0.4);
     const kind = QTE_KINDS[Math.floor(ai.rng() * QTE_KINDS.length)];
-    applyQte(g, g.presence[me]!, me, kind, ai.rng() < L.success);
     const b = getBattle(g, g.presence[me]);
+    // Pursuits come up when the enemy is beaten down, for the AI as for the player.
+    if (b && pursuitReady(b, me) && ai.rng() < 0.4) {
+      const hits = [0, 1, 2].filter(() => ai.rng() < L.success).length;
+      applyPursuit(g, b.id, me, hits);
+    } else applyQte(g, g.presence[me]!, me, kind, ai.rng() < L.success);
     if (b && (sideOf(b, me)?.rally ?? 0) >= 1) useFinisher(g, b.id, me);
     // Inspire a close fight that is slipping away.
     const own = b ? sideOf(b, me)?.troops ?? 0 : 0;

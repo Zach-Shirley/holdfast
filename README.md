@@ -67,7 +67,7 @@ npm run build
   - **AI:** values special strongholds, runs rally routes from its interior to the front, uses March on big attacks (Normal and Hard), Inspire on fights that are slipping away, and Spy under fog.
 - **Commanders and rivals (Phase 4, 2026-10-19):**
   - **Your commander** (picked on the start screen):
-    - **The Archer:** Volleys kill 60% more, and the ring closes in 1.35 s instead of 1.0 s, so timing is easier.
+    - **The Archer:** Volleys kill 60% more, and the Volley ring eases in and pauses briefly at the perfect moment (see below).
     - **The Duelist:** a successful Slash also kills 5% (scaled by quick-time power), and you win duels within 0.1 s.
     - **The Iron Wall:** missed Parries cost nothing, and your walls are +0.2.
     - **The Raider:** columns march 25% faster, and your road ambushes start at +0.5 momentum.
@@ -78,6 +78,10 @@ npm run build
     - **Silas Quickfinger** (Opportunist, Archer): favours and presses targets away from where your commander is fighting.
     - **Captain Rook** (Gambler, Herald): unpredictable odds, sometimes throws everything at one target.
   - **Balance check** (AI vs AI, 48 games each, Normal): every personality won between 37% and 63%. The Aggressor starts about 1.5× as many attacks as the Turtle. The Opportunist ranks lowest against other AIs, because its edge (punishing a busy commander) mostly applies to a human spending time in battles.
+- **After Zach's first Phase 4 playtest (2026-10-19):**
+  - **Pursuit is more common.** It now appears once any enemy side is below half its peak strength (40% of event picks), and against a rout (60%). Each caught runner kills 3.5% of the enemy, or 5% against a rout, times quick-time power. The AI commander gets Pursuits under the same rule, so it stays fair.
+  - **The Archer's Volley ring is eased** instead of slowed: it starts faster, slows as it nears the target, and holds for 0.14 s at the perfect moment; the total time is unchanged. This only helps a human's timing. A timing-error model suggests about +5 to +20 points of Volley hit rate (roughly +1 to +5 points of overall quick-time success), on the commander that was already weakest in AI tests, so it was kept. That is modelled, not playtested.
+  - **Watch AI vs AI** (start screen): choose the left AI (or Random) against the Rival. Fog is off while watching. Speed is 1×, 2× or 4×. Click any battle to watch inside it, where each commander's quick-time results float over their own army. The end screen names the winner.
 - **Training** (start screen): pick any of the six events (including Duel and Pursuit), read the steps, **watch a demo** where a ghost cursor performs it, then **practise** it on repeat with hits, misses and a streak counter.
 - **Enemy commander:** the AI plays the same quick-time events, one battle at a time, with a switching delay and a success rate set by difficulty (easy 55%, normal 70%, hard 82%). It deliberately attacks where your commander is not.
 - **Winning:** take the enemy capital. A 12-minute war clock breaks deadlocks: at zero, whoever holds more strongholds wins, with total troops as the tiebreak.

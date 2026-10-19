@@ -78,6 +78,9 @@ export interface MapUi {
   rallyDrag: { from: number; x: number; y: number; target: number | null } | null;
   /** Ability waiting for a target click. */
   targeting: 'march' | 'inspire' | null;
+  /** Watch mode: both sides are AIs; flags use their names. */
+  spectate?: boolean;
+  names?: [string, string];
 }
 
 export class MapRenderer {
@@ -359,7 +362,8 @@ export class MapRenderer {
 
     // Event floaters.
     for (const e of g.events) {
-      if (e.kind === 'battle' || e.kind === 'qte') continue;
+      if (e.kind === 'battle' || e.kind === 'qte' || e.kind === 'taunt') continue;
+      if (ui.spectate) continue;
       if (!visible(e.x, e.y)) continue;
       const age = g.time - e.t;
       if (age > 3) continue;
@@ -645,8 +649,8 @@ export class MapRenderer {
     const order = [...parts].sort((a, b2) => (a.owner === 0 ? -1 : b2.owner === 0 ? 1 : 0));
     order.forEach((s, i) => this.pill(String(Math.ceil(s.troops)), p.x + (i === 0 ? -1 : 1) * (R + 34) + (i > 1 ? 56 : 0), p.y, s.owner));
     // Commanders present.
-    if (g.presence[0] === b.id) this.flag(p.x - 6, p.y - R - 10, 0, 'YOU');
-    if (g.presence[1] === b.id && canSee(g, 0, b.x, b.y)) this.flag(p.x + 6, p.y - R - 10, 1, inDuel(g, b) ? 'DUEL!' : 'ENEMY CMDR');
+    if (g.presence[0] === b.id) this.flag(p.x - 6, p.y - R - 10, 0, ui.spectate && ui.names ? ui.names[0].toUpperCase() : 'YOU');
+    if (g.presence[1] === b.id && canSee(g, 0, b.x, b.y)) this.flag(p.x + 6, p.y - R - 10, 1, ui.spectate && ui.names ? ui.names[1].toUpperCase() : inDuel(g, b) ? 'DUEL!' : 'ENEMY CMDR');
   }
 
   private flag(x: number, y: number, owner: Owner, text: string) {
