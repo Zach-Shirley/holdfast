@@ -1,6 +1,6 @@
 import { NODE_STATS, WORLD_H, WORLD_W, type GraphMap, type MapNode } from './map';
 import { fbm, makeNoise, mulberry32 } from './rng';
-import { activeBattles, columnPos, type Battle, type Game, type Owner } from './sim';
+import { activeBattles, columnPos, inDuel, sideOf, type Battle, type Game, type Owner } from './sim';
 
 export const OWNER_COLOR: Record<Owner, string> = { 0: '#e2364d', 1: '#4aa3d8', 2: '#a89a7c' };
 export const OWNER_LIGHT: Record<Owner, string> = { 0: '#ff8a98', 1: '#a8dcff', 2: '#d8ccb0' };
@@ -191,7 +191,9 @@ export class MapRenderer {
         ctx.arc(x, y, 4.2, 0, Math.PI * 2);
         ctx.fill();
       }
-      this.pill(String(Math.floor(c.troops)), p.x, p.y - 22, c.owner);
+      // Stance glyph: ▲ assault, ■ hold, » skirmish.
+      const glyph = c.stance === 'assault' ? '▲' : c.stance === 'hold' ? '■' : '»';
+      this.pill(`${glyph} ${Math.floor(c.troops)}`, p.x, p.y - 22, c.owner);
     }
 
     // Nodes.
@@ -337,11 +339,14 @@ export class MapRenderer {
     const { ctx } = this;
     const p = this.markerPos(g, b);
     const total = b.sides.reduce((t, s) => t + Math.max(0, s.troops), 0) || 1;
-    const pulse = 1 + 0.08 * Math.sin(ui.now * 6 + b.id);
+    // Battles you are losing pulse fast and red.
+    const mine = Math.max(0, sideOf(b, 0)?.troops ?? 0);
+    const losing = mine > 0.5 && mine / total < 0.4;
+    const pulse = 1 + (losing ? 0.14 : 0.08) * Math.sin(ui.now * (losing ? 12 : 6) + b.id);
     const R = 32 * pulse;
-    const halo = ctx.createRadialGradient(p.x, p.y, R * 0.8, p.x, p.y, R * 2);
-    halo.addColorStop(0, 'rgba(255,200,150,0.35)');
-    halo.addColorStop(1, 'rgba(255,200,150,0)');
+    const halo = ctx.createRadialGradient(p.x, p.y, R * 0.8, p.x, p.y, R * 2.2);
+    halo.addColorStop(0, losing ? 'rgba(255,60,70,0.55)' : 'rgba(255,200,150,0.35)');
+    halo.addColorStop(1, losing ? 'rgba(255,60,70,0)' : 'rgba(255,200,150,0)');
     ctx.fillStyle = halo;
     ctx.beginPath();
     ctx.arc(p.x, p.y, R * 2, 0, Math.PI * 2);
@@ -378,7 +383,7 @@ export class MapRenderer {
     order.forEach((s, i) => this.pill(String(Math.ceil(s.troops)), p.x + (i === 0 ? -1 : 1) * (R + 34) + (i > 1 ? 56 : 0), p.y, s.owner));
     // Commanders present.
     if (g.presence[0] === b.id) this.flag(p.x - 6, p.y - R - 10, 0, 'YOU');
-    if (g.presence[1] === b.id) this.flag(p.x + 6, p.y - R - 10, 1, 'ENEMY CMDR');
+    if (g.presence[1] === b.id) this.flag(p.x + 6, p.y - R - 10, 1, inDuel(g, b) ? 'DUEL!' : 'ENEMY CMDR');
   }
 
   private flag(x: number, y: number, owner: Owner, text: string) {

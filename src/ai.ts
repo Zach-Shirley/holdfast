@@ -6,8 +6,13 @@ import {
   activeBattles,
   applyQte,
   getBattle,
+  isRouting,
+  redirectColumn,
+  retreat,
+  retreatTarget,
   sendTroops,
   sideOf,
+  useFinisher,
   type Battle,
   type Game,
   type Player,
@@ -20,11 +25,16 @@ export type Difficulty = 'easy' | 'normal' | 'hard';
  * The AI commander has one pair of hands, like the player: it can be in one battle at a time,
  * takes time to switch, and plays quick-time events at a set pace and success rate.
  */
-export const AI_LEVELS: Record<Difficulty, { think: number; qteEvery: number; success: number; margin: number; attacks: number; switchTime: number }> = {
-  easy: { think: 2.2, qteEvery: 2.4, success: 0.55, margin: 1.45, attacks: 1, switchTime: 3 },
-  normal: { think: 1.5, qteEvery: 1.8, success: 0.7, margin: 1.25, attacks: 1, switchTime: 2 },
-  hard: { think: 1.0, qteEvery: 1.4, success: 0.82, margin: 1.12, attacks: 2, switchTime: 1.5 },
+export const AI_LEVELS: Record<Difficulty, { think: number; qteEvery: number; success: number; margin: number; attacks: number; switchTime: number; duelReaction: number }> = {
+  easy: { think: 2.2, qteEvery: 2.4, success: 0.55, margin: 1.45, attacks: 1, switchTime: 3, duelReaction: 0.7 },
+  normal: { think: 1.5, qteEvery: 1.8, success: 0.7, margin: 1.25, attacks: 1, switchTime: 2, duelReaction: 0.5 },
+  hard: { think: 1.0, qteEvery: 1.4, success: 0.82, margin: 1.12, attacks: 2, switchTime: 1.5, duelReaction: 0.38 },
 };
+
+/** Seconds the AI commander takes to react in a duel (with a little randomness). */
+export function duelReaction(ai: AiState): number {
+  return AI_LEVELS[ai.level].duelReaction * (0.85 + ai.rng() * 0.3);
+}
 
 export interface AiState {
   me: Player;
@@ -41,10 +51,12 @@ export interface AiState {
   /** Last time we gained ground; boldness grows the longer we go without. */
   lastGainAt: number;
   held: number;
+  /** Nodes we just retreated from, and until when we stay away. */
+  abandoned: Map<number, number>;
 }
 
 export function createAi(me: Player, level: Difficulty, seed = 1, commander = true): AiState {
-  return { me, level, thinkT: 1, focusT: 0, qteT: 0, arriveT: 0, rng: mulberry32(seed), commander, musterAt: 0, lastGainAt: 0, held: 1 };
+  return { me, level, thinkT: 1, focusT: 0, qteT: 0, arriveT: 0, rng: mulberry32(seed), commander, musterAt: 0, lastGainAt: 0, held: 1, abandoned: new Map() };
 }
 
 const VALUE = { capital: 6, fort: 2.4, village: 3 };
@@ -78,6 +90,24 @@ function think(g: Game, ai: AiState) {
   if (mine.length > ai.held) ai.lastGainAt = g.time;
   ai.held = mine.length;
 
+  const avoid = (n: number) => (ai.abandoned.get(n) ?? 0) > g.time;
+
+  // 0. Cut losses: pull out of hopeless fights (never abandon our own capital).
+  for (const b of activeBattles(g)) {
+    const own = sideOf(b, me);
+    if (!own || own.troops < 4) continue;
+    if (b.nodeId === m.capitals[me]) continue;
+    const enemy = b.sides.filter((s) => s.owner !== me).reduce((t, s) => t + Math.max(0, s.troops), 0);
+    // Give every fight a couple of seconds (the commander may swing it) before giving up.
+    if (g.time - b.startedAt < 2) continue;
+    const hopeless = enemy > own.troops * 2.5 || (isRouting(b, own) && enemy > own.troops * 1.5);
+    const dest = retreatTarget(g, b, me);
+    if (!hopeless || dest === null || !retreat(g, b.id, me) || b.nodeId === null) continue;
+    ai.abandoned.set(b.nodeId, g.time + 20);
+    // Columns already on their way to this fight turn back too.
+    for (const c of g.columns) if (c.owner === me && c.path[c.path.length - 1] === b.nodeId) redirectColumn(g, c, dest, b.nodeId);
+  }
+
   // 1. Defence: reinforce nodes that are about to be hit or are losing a fight.
   for (const n of mine) {
     const def = NODE_STATS[m.nodes[n.id].kind].defense;
@@ -90,12 +120,12 @@ function think(g: Game, ai: AiState) {
     } else {
       need = incoming(g, n.id, me) * 1.15 - n.troops * def - friendlyIncoming(g, n.id, me);
     }
-    if (need <= 1) continue;
+    if (need <= 1 || (n.battleId !== null && avoid(n.id))) continue;
     for (const k of [...m.adj[n.id]].sort((p, q) => available(g, q, me) - available(g, p, me))) {
       const av = available(g, k, me);
       if (av < 3 || need <= 0) continue;
       const amt = Math.min(av, need + 3);
-      if (sendTroops(g, me, k, n.id, amt)) need -= amt;
+      if (sendTroops(g, me, k, n.id, amt, 'hold')) need -= amt;
     }
   }
 
@@ -107,6 +137,7 @@ function think(g: Game, ai: AiState) {
   const frontier = new Set<number>();
   for (const n of mine) for (const k of m.adj[n.id]) if (g.nodes[k].owner !== me) frontier.add(k);
   for (const t of frontier) {
+    if (avoid(t)) continue;
     const tn = g.nodes[t];
     const kind = m.nodes[t].kind;
     let est: number;
@@ -148,7 +179,7 @@ function think(g: Game, ai: AiState) {
         if (n.id === staging || n.battleId !== null) continue;
         const d = hops(m, n.id, staging);
         const av = available(g, n.id, me);
-        if (d > 0 && d <= 3 && av >= 5) sendTroops(g, me, n.id, staging, av * 0.85);
+        if (d > 0 && d <= 3 && av >= 5) sendTroops(g, me, n.id, staging, av * 0.85, 'skirmish');
       }
     }
   }
@@ -156,7 +187,9 @@ function think(g: Game, ai: AiState) {
     let left = tg.needed;
     for (const k of tg.sources) {
       const amt = Math.min(available(g, k, me), left);
-      if (amt >= 1 && sendTroops(g, me, k, tg.t, amt)) left -= amt;
+      // Walls call for an assault; open villages for speed.
+      const stance = m.nodes[tg.t].kind === 'village' ? 'skirmish' : 'assault';
+      if (amt >= 1 && sendTroops(g, me, k, tg.t, amt, stance)) left -= amt;
     }
   }
 
@@ -175,7 +208,7 @@ function think(g: Game, ai: AiState) {
         best = f.id;
       }
     }
-    if (best >= 0) sendTroops(g, me, n.id, best, n.troops - reserve(g, n.id));
+    if (best >= 0) sendTroops(g, me, n.id, best, n.troops - reserve(g, n.id), 'skirmish');
   }
 }
 
@@ -223,6 +256,8 @@ function commander(g: Game, ai: AiState, dt: number) {
     ai.qteT = L.qteEvery * (0.8 + ai.rng() * 0.4);
     const kind = QTE_KINDS[Math.floor(ai.rng() * QTE_KINDS.length)];
     applyQte(g, g.presence[me]!, me, kind, ai.rng() < L.success);
+    const b = getBattle(g, g.presence[me]);
+    if (b && (sideOf(b, me)?.rally ?? 0) >= 1) useFinisher(g, b.id, me);
   }
 }
 

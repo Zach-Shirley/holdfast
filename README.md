@@ -26,9 +26,20 @@ npm run build
   - **Banner:** hold the mouse on the moving banner for 1 s. Kills about 10%, plus 2–3, and +0.375 momentum.
   - Leave with Esc, right-click or the button, or jump straight to another battle from the side list.
   - Misses explain themselves (for example "Too early: wait until the white ring touches the target"), and a click in the wrong place gives a hint instead of a miss.
-- **Training** (start screen): pick any of the four events, read the steps, **watch a demo** where a ghost cursor performs it, then **practise** it on repeat with hits, misses and a streak counter.
+- **Battle decisions (Phase 1, 2026-10-19):**
+  - **Rally & Charge:** each hit fills a rally meter (4 hits). A full meter enables **CHARGE!**, which kills 25% of the enemy plus 3. Misses drain the meter.
+  - **Retreat:** pull your side out to the nearest friendly stronghold, keeping 85%. A defender who retreats hands the node to the attacker.
+  - **Stances** (dock, per column): Assault +20% damage dealt, Hold −20% damage taken, Skirmish +25% march speed. Each also makes one event type more common. Columns show ▲ ■ » on the map.
+  - **Rout:** a side below 25% of its peak takes +25% losses. A routing enemy triggers **Pursuit** (click 3 fleeing soldiers); your own rout makes Retreat pulse.
+  - **Commander duels:** when both commanders are in one battle, a duel breaks out about every 6 s. Wait for the signal, then click NOW! faster than the enemy (Normal: about 0.5 s). The winner kills 15% + 3 of the loser and surges.
+  - **Pressure cues:** battles you are losing pulse red on the map. Inside a battle, red edge arrows point toward them; click one to jump there.
+- **Training** (start screen): pick any of the six events (including Duel and Pursuit), read the steps, **watch a demo** where a ghost cursor performs it, then **practise** it on repeat with hits, misses and a streak counter.
 - **Enemy commander:** the AI plays the same quick-time events, one battle at a time, with a switching delay and a success rate set by difficulty (easy 55%, normal 70%, hard 82%). It deliberately attacks where your commander is not.
 - **Winning:** take the enemy capital. A 12-minute war clock breaks deadlocks: at zero, whoever holds more strongholds wins, with total troops as the tiebreak.
+
+## Online-ready design note
+
+Every player action is a plain function on the simulation: `sendTroops` (with stance), `applyQte`, `useFinisher`, `retreat`, `applyDuel` and `applyPursuit`. The simulation is deterministic given those calls, so a future online 1v1 can sync the list of actions between peers (lockstep) instead of syncing state. Duels between two humans will need both reaction times compared by an agreed rule; that is still to design.
 
 ## Code map
 
@@ -43,7 +54,7 @@ npm run build
 
 ## Verification (2026-10-18)
 
-- `npm test`: 20 passing. Covers:
+- `npm test`: 26 passing. Phase 1 added tests for rally/finisher, retreat (attacker and defender), stances, rout and duel/pursuit, plus checks that both AIs use finishers and retreats in the 20-map sweep. Covers:
   - map generation for every size (connected, symmetric, capitals at least 3 roads apart) and determinism
   - garrison growth and caps, capture, battle length, wall bonus and road interception
   - quick-time successes flipping a losing fight

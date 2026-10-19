@@ -21,6 +21,25 @@ export const MATCH_TIME = 720;
 
 export type QteKind = 'volley' | 'parry' | 'slash' | 'banner';
 
+/** How a column fights. Chosen when sending troops; garrisons have no stance. */
+export type Stance = 'assault' | 'hold' | 'skirmish';
+export const STANCES: Record<Stance, { dmgOut: number; dmgIn: number; speed: number; label: string; desc: string }> = {
+  assault: { dmgOut: 1.2, dmgIn: 1, speed: 1, label: 'Assault', desc: '+20% damage dealt. More Slash events.' },
+  hold: { dmgOut: 1, dmgIn: 0.8, speed: 1, label: 'Hold', desc: '−20% damage taken. More Parry events.' },
+  skirmish: { dmgOut: 1, dmgIn: 1, speed: 1.25, label: 'Skirmish', desc: '+25% march speed. More Volley events.' },
+};
+
+/** Rally meter gained per quick-time hit (four hits fill it) and lost per miss. */
+export const RALLY_PER_HIT = 0.25;
+export const RALLY_PER_MISS = 0.15;
+/** The finisher ("Charge!") kills this share of the enemy, plus 3. */
+export const FINISHER_KILL = 0.25;
+/** Retreating troops lose this share on the way out. */
+export const RETREAT_LOSS = 0.15;
+/** A side below this share of its peak strength is routing: it takes extra damage. */
+export const ROUT_AT = 0.25;
+export const ROUT_DAMAGE = 1.25;
+
 export interface NodeState {
   id: number;
   owner: Owner;
@@ -40,12 +59,16 @@ export interface Column {
   progress: number;
   edgeLen: number;
   battleId: number | null;
+  stance: Stance;
 }
 
 export interface Side {
   owner: Owner;
   troops: number;
   momentum: number;
+  /** Rally meter 0..1, filled by quick-time hits; full enables the finisher. */
+  rally: number;
+  stance?: Stance;
   /** Road battles only: where this side was marching, so survivors can carry on. */
   march?: { from: number; path: number[]; progress: number; edgeLen: number };
 }
@@ -66,7 +89,7 @@ export interface Battle {
 }
 
 export interface GameEvent {
-  kind: 'battle' | 'captured' | 'lost' | 'won' | 'held' | 'intercept' | 'qte';
+  kind: 'battle' | 'captured' | 'lost' | 'won' | 'held' | 'intercept' | 'qte' | 'retreat' | 'finisher' | 'duel';
   text: string;
   owner: Owner;
   x: number;
@@ -82,6 +105,10 @@ export interface PlayerStats {
   qteHit: number;
   troopsSent: number;
   nodesTaken: number;
+  finishers: number;
+  retreats: number;
+  duels: number;
+  duelsWon: number;
 }
 
 export interface Game {
@@ -99,7 +126,7 @@ export interface Game {
   stats: [PlayerStats, PlayerStats];
 }
 
-const emptyStats = (): PlayerStats => ({ battlesFought: 0, battlesWon: 0, qtePlayed: 0, qteHit: 0, troopsSent: 0, nodesTaken: 0 });
+const emptyStats = (): PlayerStats => ({ battlesFought: 0, battlesWon: 0, qtePlayed: 0, qteHit: 0, troopsSent: 0, nodesTaken: 0, finishers: 0, retreats: 0, duels: 0, duelsWon: 0 });
 
 export function createGame(map: GraphMap): Game {
   const rng = mulberry32(map.seed ^ 0x51ed);
@@ -149,6 +176,16 @@ export function sideDefense(g: Game, b: Battle, s: Side): number {
   return g.nodes[b.nodeId].owner === s.owner ? NODE_STATS[g.map.nodes[b.nodeId].kind].defense : 1;
 }
 
+/** A side that has fallen below a quarter of its peak strength breaks and takes extra losses. */
+export function isRouting(b: Battle, s: Side): boolean {
+  const alive = b.sides.filter((x) => x.troops > 0.5).length;
+  const peak = b.peak[s.owner] ?? 0;
+  return alive >= 2 && peak >= 8 && s.troops > 0.5 && s.troops < peak * ROUT_AT;
+}
+
+/** Both commanders are personally in this battle: duels break out. */
+export const inDuel = (g: Game, b: Battle) => g.presence[0] === b.id && g.presence[1] === b.id;
+
 /** Current loss rate per second of every side, keyed by owner. */
 export function lossRates(g: Game, b: Battle): Map<Owner, number> {
   const rates = new Map<Owner, number>();
@@ -158,9 +195,13 @@ export function lossRates(g: Game, b: Battle): Map<Owner, number> {
     const enemies = b.sides.filter((e) => e.owner !== o.owner && e.troops > 0);
     const enemyTotal = enemies.reduce((t, e) => t + e.troops, 0);
     if (!enemyTotal) continue;
-    const out = (BASE_LOSS + PER_TROOP_LOSS * o.troops) * o.momentum * sideDefense(g, b, o);
+    const stanceOut = o.stance ? STANCES[o.stance].dmgOut : 1;
+    const out = (BASE_LOSS + PER_TROOP_LOSS * o.troops) * o.momentum * sideDefense(g, b, o) * stanceOut;
     // Spread this side's damage over its enemies by size.
-    for (const e of enemies) rates.set(e.owner, rates.get(e.owner)! + (out * e.troops) / enemyTotal);
+    for (const e of enemies) {
+      const taken = (e.stance ? STANCES[e.stance].dmgIn : 1) * (isRouting(b, e) ? ROUT_DAMAGE : 1);
+      rates.set(e.owner, rates.get(e.owner)! + ((out * e.troops) / enemyTotal) * taken);
+    }
   }
   return rates;
 }
@@ -195,7 +236,7 @@ export function route(g: Game, owner: Player, from: number, to: number): number[
 }
 
 /** Send `amount` troops from a node you hold. Returns the column, or null if nothing was sent. */
-export function sendTroops(g: Game, owner: Player, from: number, to: number, amount: number): Column | null {
+export function sendTroops(g: Game, owner: Player, from: number, to: number, amount: number, stance: Stance = 'assault'): Column | null {
   const node = g.nodes[from];
   if (g.winner !== null || node.owner !== owner || node.battleId !== null || from === to) return null;
   const n = Math.min(Math.floor(amount), Math.floor(node.troops));
@@ -212,6 +253,7 @@ export function sendTroops(g: Game, owner: Player, from: number, to: number, amo
     progress: 0,
     edgeLen: edgeBetween(g.map, from, path[0])!.len,
     battleId: null,
+    stance,
   };
   g.columns.push(col);
   g.stats[owner].troopsSent += n;
@@ -238,10 +280,10 @@ function startBattle(g: Game, nodeId: number | null, road: Battle['road'], x: nu
   return b;
 }
 
-function joinBattle(g: Game, b: Battle, owner: Owner, troops: number, march?: Side['march']) {
+function joinBattle(g: Game, b: Battle, owner: Owner, troops: number, march?: Side['march'], stance?: Stance) {
   let s = sideOf(b, owner);
   if (!s) {
-    s = { owner, troops: 0, momentum: 1, march };
+    s = { owner, troops: 0, momentum: 1, rally: 0, march, stance };
     b.sides.push(s);
     if (owner !== 2) g.stats[owner].battlesFought++;
   }
@@ -260,7 +302,7 @@ function arrive(g: Game, c: Column): boolean {
   const node = g.nodes[at];
   const mn = g.map.nodes[at];
   if (node.battleId !== null) {
-    joinBattle(g, getBattle(g, node.battleId)!, c.owner, c.troops);
+    joinBattle(g, getBattle(g, node.battleId)!, c.owner, c.troops, undefined, c.stance);
     return true;
   }
   if (node.owner === c.owner) {
@@ -275,9 +317,9 @@ function arrive(g: Game, c: Column): boolean {
     c.edgeLen = edgeBetween(g.map, at, c.path[0])!.len;
     return false;
   }
-  const defender: Side = { owner: node.owner, troops: node.troops, momentum: 1 };
+  const defender: Side = { owner: node.owner, troops: node.troops, momentum: 1, rally: 0 };
   node.troops = 0;
-  const b = startBattle(g, at, null, mn.x, mn.y, [defender, { owner: c.owner, troops: c.troops, momentum: 1 }]);
+  const b = startBattle(g, at, null, mn.x, mn.y, [defender, { owner: c.owner, troops: c.troops, momentum: 1, rally: 0, stance: c.stance }]);
   node.battleId = b.id;
   event(g, { kind: 'battle', text: `${c.owner === 0 ? 'You attack' : 'Enemy attacks'} ${mn.name}`, owner: c.owner, x: mn.x, y: mn.y, battleId: b.id });
   return true;
@@ -310,7 +352,7 @@ function endBattle(g: Game, b: Battle) {
   }
   // Road battle: the survivors march on.
   if (win && win.march && win.owner !== 2) {
-    g.columns.push({ id: g.nextId++, owner: win.owner, troops: win.troops, from: win.march.from, path: win.march.path, progress: win.march.progress, edgeLen: win.march.edgeLen, battleId: null });
+    g.columns.push({ id: g.nextId++, owner: win.owner, troops: win.troops, from: win.march.from, path: win.march.path, progress: win.march.progress, edgeLen: win.march.edgeLen, battleId: null, stance: win.stance ?? 'assault' });
     if (win.owner === 0) event(g, { kind: 'won', text: 'Your column broke through', owner: 0, x: b.x, y: b.y });
   }
 }
@@ -322,14 +364,9 @@ export function applyQte(g: Game, battleId: number, owner: Player, kind: QteKind
   g.stats[owner].qtePlayed++;
   if (success) g.stats[owner].qteHit++;
   if (!b || !me || b.endedAt !== null) return '';
-  const enemies = b.sides.filter((s) => s.owner !== owner && s.troops > 0);
-  const enemyTotal = enemies.reduce((t, s) => t + s.troops, 0);
-  const kill = (frac: number) => {
-    const k = (enemyTotal * frac + 1) * QTE_POWER;
-    for (const e of enemies) e.troops -= (k * e.troops) / Math.max(1, enemyTotal);
-    return Math.round(k);
-  };
-  const bump = (d: number) => (me.momentum = Math.max(MOMENTUM_MIN, Math.min(MOMENTUM_MAX, me.momentum + d)));
+  me.rally = Math.max(0, Math.min(1, me.rally + (success ? RALLY_PER_HIT : -RALLY_PER_MISS)));
+  const kill = (frac: number) => killEnemies(b, owner, frac, QTE_POWER);
+  const bump = (d: number) => bumpMomentum(me, d);
   switch (kind) {
     case 'volley':
       return success ? `Volley! ${kill(0.07)} down` : 'Volley missed';
@@ -350,6 +387,138 @@ export function applyQte(g: Game, battleId: number, owner: Player, kind: QteKind
       bump(0.15 * QTE_POWER);
       return `Rallied to the banner: ${kill(0.04)} down`;
   }
+}
+
+/** Kill `frac` of all enemies of `owner` (plus `flat`), times `power`, spread by size. Returns the number killed. */
+function killEnemies(b: Battle, owner: Owner, frac: number, power: number, flat = 1): number {
+  const enemies = b.sides.filter((s) => s.owner !== owner && s.troops > 0);
+  const total = enemies.reduce((t, s) => t + s.troops, 0);
+  const k = Math.min(total, (total * frac + flat) * power);
+  for (const e of enemies) e.troops -= (k * e.troops) / Math.max(1, total);
+  return Math.round(k);
+}
+
+function bumpMomentum(s: Side, d: number) {
+  s.momentum = Math.max(MOMENTUM_MIN, Math.min(MOMENTUM_MAX, s.momentum + d));
+}
+
+/** The finisher: with a full rally meter, one charge kills a quarter of the enemy (plus 3). */
+export function useFinisher(g: Game, battleId: number, owner: Player): string {
+  const b = getBattle(g, battleId);
+  const me = b && sideOf(b, owner);
+  if (!b || !me || b.endedAt !== null || me.rally < 1) return '';
+  me.rally = 0;
+  const k = killEnemies(b, owner, FINISHER_KILL, 1, 3);
+  g.stats[owner].finishers++;
+  event(g, { kind: 'finisher', text: owner === 0 ? 'Your charge breaks their line' : 'The enemy charges!', owner, x: b.x, y: b.y, battleId });
+  return `CHARGE! ${k} down`;
+}
+
+/** Nearest node `owner` holds (not `exclude`), by road hops, preferring ones not under attack. */
+function nearestFriendly(g: Game, owner: Player, start: number, exclude: number | null): number | null {
+  const m = g.map;
+  const seen = new Set([start]);
+  let frontier = [start];
+  let fallback: number | null = null;
+  if (start !== exclude && g.nodes[start].owner === owner) {
+    if (g.nodes[start].battleId === null) return start;
+    fallback = start;
+  }
+  while (frontier.length) {
+    const next: number[] = [];
+    for (const n of frontier) {
+      for (const k of m.adj[n]) {
+        if (seen.has(k)) continue;
+        seen.add(k);
+        next.push(k);
+        if (k === exclude || g.nodes[k].owner !== owner) continue;
+        if (g.nodes[k].battleId === null) return k;
+        fallback ??= k;
+      }
+    }
+    frontier = next;
+  }
+  return fallback;
+}
+
+/** Where a retreat from this battle would go, or null if there is nowhere to fall back to. */
+export function retreatTarget(g: Game, b: Battle, owner: Player): number | null {
+  if (b.nodeId !== null) return nearestFriendly(g, owner, b.nodeId, b.nodeId);
+  const side = sideOf(b, owner);
+  if (!side?.march) return null;
+  return nearestFriendly(g, owner, side.march.from, null);
+}
+
+/** Pull `owner`'s troops out of a battle to the nearest friendly node, losing RETREAT_LOSS on the way. */
+export function retreat(g: Game, battleId: number, owner: Player): Column | null {
+  const b = getBattle(g, battleId);
+  const side = b && sideOf(b, owner);
+  if (!b || !side || b.endedAt !== null || side.troops <= 0.5) return null;
+  const dest = retreatTarget(g, b, owner);
+  if (dest === null) return null;
+  let col: Column;
+  const troops = side.troops * (1 - RETREAT_LOSS);
+  if (b.nodeId !== null) {
+    const path = route(g, owner, b.nodeId, dest);
+    if (!path || !path.length) return null;
+    col = { id: g.nextId++, owner, troops, from: b.nodeId, path, progress: 0, edgeLen: edgeBetween(g.map, b.nodeId, path[0])!.len, battleId: null, stance: 'skirmish' };
+  } else {
+    // Turn around on the road and head back the way we came.
+    const mch = side.march!;
+    const back = mch.from;
+    const tail = back === dest ? [] : route(g, owner, back, dest) ?? [];
+    col = { id: g.nextId++, owner, troops, from: mch.path[0], path: [back, ...tail], progress: Math.max(0, mch.edgeLen - mch.progress), edgeLen: mch.edgeLen, battleId: null, stance: 'skirmish' };
+  }
+  b.sides = b.sides.filter((s) => s !== side);
+  g.columns.push(col);
+  g.stats[owner].retreats++;
+  if (g.presence[owner] === battleId) g.presence[owner] = null;
+  event(g, { kind: 'retreat', text: owner === 0 ? 'Your troops fall back' : 'The enemy falls back', owner, x: b.x, y: b.y, battleId });
+  if (b.sides.filter((s) => s.troops > 0.5).length <= 1) endBattle(g, b);
+  return col;
+}
+
+/** Send a marching column somewhere else; if its next stop is the place it is avoiding, it turns around. */
+export function redirectColumn(g: Game, c: Column, dest: number, avoid: number) {
+  if (c.path[0] === avoid) {
+    const back = c.from;
+    const tail = back === dest ? [] : route(g, c.owner, back, dest) ?? [];
+    c.from = c.path[0];
+    c.path = [back, ...tail];
+    c.progress = Math.max(0, c.edgeLen - c.progress);
+  } else {
+    const next = c.path[0];
+    const tail = next === dest ? [] : route(g, c.owner, next, dest);
+    if (tail) c.path = [next, ...tail];
+  }
+}
+
+/** A commander duel: the winner's side surges, the loser's side reels. */
+export function applyDuel(g: Game, battleId: number, winner: Player): string {
+  const b = getBattle(g, battleId);
+  const win = b && sideOf(b, winner);
+  const lose = b && sideOf(b, (1 - winner) as Player);
+  if (!b || !win || !lose || b.endedAt !== null) return '';
+  const k = lose.troops * 0.15 + 3;
+  lose.troops -= k;
+  bumpMomentum(win, 0.5);
+  bumpMomentum(lose, -0.3);
+  g.stats[0].duels++;
+  g.stats[1].duels++;
+  g.stats[winner].duelsWon++;
+  event(g, { kind: 'duel', text: winner === 0 ? 'You won the duel' : 'The enemy commander won the duel', owner: winner, x: b.x, y: b.y, battleId });
+  return winner === 0 ? `Duel won! ${Math.round(k)} down` : `Duel lost: −${Math.round(k)}`;
+}
+
+/** Pursuit of a routing enemy: each fleeing soldier caught kills a slice of them. */
+export function applyPursuit(g: Game, battleId: number, owner: Player, hits: number): string {
+  const b = getBattle(g, battleId);
+  const me = b && sideOf(b, owner);
+  g.stats[owner].qtePlayed++;
+  if (hits > 0) g.stats[owner].qteHit++;
+  if (!b || !me || b.endedAt !== null || hits <= 0) return hits <= 0 ? 'They got away' : '';
+  me.rally = Math.min(1, me.rally + RALLY_PER_HIT);
+  return `Pursuit: ${killEnemies(b, owner, 0.05 * hits, QTE_POWER)} cut down`;
 }
 
 /** Every troop a player has: garrisons, columns and soldiers in battles. */
@@ -382,11 +551,11 @@ export function step(g: Game, dt: number) {
     if (c.battleId !== null) continue;
     const a = Math.min(c.from, c.path[0]);
     const before = posOnRoad(c, a);
-    c.progress += COLUMN_SPEED * dt;
+    c.progress += COLUMN_SPEED * STANCES[c.stance].speed * dt;
     const after = posOnRoad(c, a);
     const rb = roadBattles.find((b) => b.road!.a === a && b.road!.b === Math.max(c.from, c.path[0]) && (before - b.road!.pos) * (after - b.road!.pos) <= 0);
     if (rb) {
-      joinBattle(g, rb, c.owner, c.troops, { from: c.from, path: c.path, progress: Math.min(c.progress, c.edgeLen), edgeLen: c.edgeLen });
+      joinBattle(g, rb, c.owner, c.troops, { from: c.from, path: c.path, progress: Math.min(c.progress, c.edgeLen), edgeLen: c.edgeLen }, c.stance);
       g.columns.splice(g.columns.indexOf(c), 1);
       continue;
     }
@@ -404,8 +573,8 @@ export function step(g: Game, dt: number) {
       const at = columnPos(g, p);
       const march = (c: Column) => ({ from: c.from, path: c.path, progress: Math.min(c.progress, c.edgeLen), edgeLen: c.edgeLen });
       const b = startBattle(g, null, { a, b: Math.max(p.from, q.from), pos, len: p.edgeLen }, at.x, at.y, [
-        { owner: p.owner, troops: p.troops, momentum: 1, march: march(p) },
-        { owner: q.owner, troops: q.troops, momentum: 1, march: march(q) },
+        { owner: p.owner, troops: p.troops, momentum: 1, rally: 0, stance: p.stance, march: march(p) },
+        { owner: q.owner, troops: q.troops, momentum: 1, rally: 0, stance: q.stance, march: march(q) },
       ]);
       event(g, { kind: 'intercept', text: 'Columns clash on the road', owner: 2, x: at.x, y: at.y, battleId: b.id });
       g.columns.splice(j, 1);

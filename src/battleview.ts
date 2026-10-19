@@ -1,6 +1,15 @@
 import { NODE_STATS } from './map';
 import { OWNER_COLOR, OWNER_DARK, OWNER_LIGHT } from './render';
-import { activeBattles, battleName, getBattle, sideDefense, sideOf, type Battle, type Game, type Owner, type QteKind } from './sim';
+import { STANCES, activeBattles, battleName, getBattle, inDuel, isRouting, sideDefense, sideOf, type Battle, type Game, type Owner, type QteKind } from './sim';
+
+/** Everything the battle view can throw at you: the four basics plus situational events. */
+export type ViewKind = QteKind | 'duel' | 'pursuit';
+/** Duel: wait for the signal, then click faster than the enemy commander. */
+const DUEL_TARGET_R = 70;
+const DUEL_EVERY = 6;
+/** Pursuit: click fleeing enemies before they escape. */
+const PURSUIT_TIME = 1.9;
+const PURSUIT_R = 30;
 
 /** Volley: click the target when the closing ring meets it. */
 const VOLLEY_HIT = 1.0;
@@ -25,7 +34,9 @@ type Qte =
   | { kind: 'volley'; t: number; x: number; y: number }
   | { kind: 'parry'; t: number; ang: number }
   | { kind: 'slash'; t: number; ax: number; ay: number; bx: number; by: number; grabbed: boolean; trail: { x: number; y: number }[] }
-  | { kind: 'banner'; t: number; held: number; phase: number };
+  | { kind: 'banner'; t: number; held: number; phase: number }
+  | { kind: 'duel'; t: number; fireAt: number; enemy: number; x: number; y: number }
+  | { kind: 'pursuit'; t: number; runners: { x: number; y: number; vx: number; vy: number; hit: boolean }[] };
 
 interface Floater {
   text: string;
@@ -39,7 +50,7 @@ interface Floater {
 }
 
 /** How each quick-time event works, shown on the Training screen. */
-export const DRILLS: Record<QteKind, { name: string; color: string; steps: string[]; effect: string; tip: string }> = {
+export const DRILLS: Record<ViewKind, { name: string; color: string; steps: string[]; effect: string; tip: string }> = {
   volley: {
     name: 'Volley',
     color: '#ffa94d',
@@ -84,6 +95,28 @@ export const DRILLS: Record<QteKind, { name: string; color: string; steps: strin
     effect: 'Kills about 10% of the enemy (plus 2–3) and adds a momentum boost.',
     tip: 'Time only counts while the button is down and the cursor is on the banner. Slipping off just pauses the ring.',
   },
+  duel: {
+    name: 'Duel',
+    color: '#ff5f74',
+    steps: [
+      'Only happens when the enemy commander is in the same battle as you (you will see a DUEL banner).',
+      'Wait while the crossed swords say "Wait for the signal". Clicking early is a false start and loses.',
+      'When the big red NOW! target appears, click it faster than the enemy commander.',
+    ],
+    effect: 'Winner kills about 15% of the loser (plus 3) and gains big momentum; the loser reels.',
+    tip: 'Keep your cursor near the centre while waiting. On Normal the enemy reacts in about half a second.',
+  },
+  pursuit: {
+    name: 'Pursuit',
+    color: '#9ff0b5',
+    steps: [
+      'Only happens when the enemy side is routing (below a quarter of its strength).',
+      'Three fleeing soldiers run for the edge of the screen.',
+      'Click as many as you can before they escape. Each one caught cuts down more of the enemy.',
+    ],
+    effect: 'Each soldier caught kills about 12% of the enemy (plus 2–3). Also fills your rally meter.',
+    tip: 'Go for the slowest runner first, then the others.',
+  },
 };
 
 /** Stand-in battle drawn behind the Training screen. */
@@ -94,8 +127,8 @@ const FAKE_BATTLE: Battle = {
   x: 0,
   y: 0,
   sides: [
-    { owner: 0, troops: 40, momentum: 1 },
-    { owner: 1, troops: 40, momentum: 1 },
+    { owner: 0, troops: 40, momentum: 1, rally: 0 },
+    { owner: 1, troops: 40, momentum: 1, rally: 0 },
   ],
   startedAt: 0,
   endedAt: null,
@@ -105,6 +138,13 @@ const FAKE_BATTLE: Battle = {
 
 export interface BattleViewHooks {
   onQte: (battleId: number, kind: QteKind, success: boolean) => string;
+  onFinisher: (battleId: number) => string;
+  onRetreat: (battleId: number) => boolean;
+  canRetreat: (battleId: number) => boolean;
+  onDuel: (battleId: number, won: boolean) => string;
+  onPursuit: (battleId: number, hits: number) => string;
+  /** Seconds the enemy commander takes to react in a duel. */
+  duelReaction: () => number;
   onLeave: () => void;
   onSwitch: (battleId: number) => void;
   onPracticeExit?: () => void;
@@ -118,7 +158,10 @@ export class BattleView {
   battleId: number | null = null;
   private qte: Qte | null = null;
   private gap = FIRST;
-  private last: QteKind | null = null;
+  private last: ViewKind | null = null;
+  private lastDuel = -99;
+  private flash = 0;
+  private arrows: { x: number; y: number; id: number }[] = [];
   private floaters: Floater[] = [];
   private shake = 0;
   private endShownAt: number | null = null;
@@ -131,7 +174,7 @@ export class BattleView {
   private now = 0;
   private els: Record<string, HTMLElement> = {};
   /** Training mode: the drill being practised (null in a real battle). */
-  private practice: QteKind | null = null;
+  private practice: ViewKind | null = null;
   /** Demo mode: a ghost cursor performs the drill. */
   private demo = false;
   private pstats = { hit: 0, miss: 0, streak: 0 };
@@ -149,12 +192,27 @@ export class BattleView {
       <div class="bv-cmdr hidden" data-el="cmdr">Enemy commander is here</div>
       <div class="bv-result hidden" data-el="result"></div>
       <aside class="bv-others"><h4>Other battles</h4><div data-el="others"></div><div class="bv-ticker" data-el="ticker"></div></aside>
-      <button class="bv-leave" data-el="leave">Back to map <span>Esc · right-click</span></button>
+      <div class="bv-bottom">
+        <button class="bv-leave" data-el="leave">Back to map <span>Esc · right-click</span></button>
+        <button class="bv-retreat" data-el="retreat">Retreat <span>keeps 85%</span></button>
+      </div>
+      <div class="bv-rally" data-el="rally"><span class="lbl">Rally</span><div class="bv-rally-bar"><div data-el="rallyfill"></div></div><button class="bv-charge hidden" data-el="charge">CHARGE!</button></div>
       <aside class="bv-practice" data-el="practice"></aside>`;
     root.querySelectorAll<HTMLElement>('[data-el]').forEach((e) => (this.els[e.dataset.el!] = e));
     this.canvas = root.querySelector('.bv-canvas')!;
     this.ctx = this.canvas.getContext('2d')!;
     this.els.leave.addEventListener('click', () => this.hooks.onLeave());
+    this.els.retreat.addEventListener('click', () => {
+      if (this.battleId !== null && this.hooks.onRetreat(this.battleId)) this.hooks.onLeave();
+    });
+    this.els.charge.addEventListener('click', () => {
+      if (this.battleId === null) return;
+      const text = this.hooks.onFinisher(this.battleId);
+      if (!text) return;
+      this.floaters.push({ text, x: this.w / 2, y: this.h * 0.45, t: 0, good: true });
+      this.shake = 0.35;
+      this.flash = 0.35;
+    });
     this.els.others.addEventListener('click', (e) => {
       const id = (e.target as HTMLElement).closest<HTMLElement>('[data-bid]')?.dataset.bid;
       if (id) this.hooks.onSwitch(Number(id));
@@ -162,7 +220,7 @@ export class BattleView {
     this.els.practice.addEventListener('click', (e) => {
       const el = (e.target as HTMLElement).closest<HTMLElement>('[data-kind],[data-act]');
       if (!el || !this.practice) return;
-      if (el.dataset.kind) this.showPractice(el.dataset.kind as QteKind, true);
+      if (el.dataset.kind) this.showPractice(el.dataset.kind as ViewKind, true);
       else if (el.dataset.act === 'demo') this.showPractice(this.practice, true);
       else if (el.dataset.act === 'try') this.showPractice(this.practice, false);
       else if (el.dataset.act === 'back') this.exitPractice();
@@ -177,6 +235,8 @@ export class BattleView {
     // Real mouse input is ignored while the demo's ghost cursor is playing.
     this.canvas.addEventListener('mousedown', (e) => {
       if (e.button !== 0 || this.demo) return;
+      const arrow = this.arrows.find((a) => Math.hypot(a.x - e.offsetX, a.y - e.offsetY) < 44);
+      if (arrow && !this.practice) return this.hooks.onSwitch(arrow.id);
       this.mouse = { x: e.offsetX, y: e.offsetY, down: true };
       this.press();
     });
@@ -203,6 +263,8 @@ export class BattleView {
     this.gap = FIRST;
     this.endShownAt = null;
     this.floaters = [];
+    this.flash = 0;
+    this.shake = 0;
     this.root.classList.remove('hidden');
     this.resize();
   }
@@ -221,7 +283,7 @@ export class BattleView {
   }
 
   /** Training screen: practise one quick-time event on repeat, or watch a ghost cursor do it. */
-  showPractice(kind: QteKind, demo = false) {
+  showPractice(kind: ViewKind, demo = false) {
     if (kind !== this.practice || demo !== this.demo) this.pstats = { hit: 0, miss: 0, streak: 0 };
     this.battleId = null;
     this.practice = kind;
@@ -245,7 +307,7 @@ export class BattleView {
     const kind = this.practice;
     if (!kind) return;
     const d = DRILLS[kind];
-    const tabs = (Object.keys(DRILLS) as QteKind[])
+    const tabs = (Object.keys(DRILLS) as ViewKind[])
       .map((k) => `<button data-kind="${k}" class="${k === kind ? 'on' : ''}" style="--c:${DRILLS[k].color}">${DRILLS[k].name}</button>`)
       .join('');
     const total = this.pstats.hit + this.pstats.miss;
@@ -288,15 +350,47 @@ export class BattleView {
     return { x: (a.x0 + a.x1) / 2, y: (a.y0 + a.y1) / 2 };
   }
 
-  private spawn() {
-    const kinds: QteKind[] = ['volley', 'parry', 'slash', 'banner'];
-    const pool = kinds.filter((k) => k !== this.last);
-    const kind = this.practice ?? pool[Math.floor(Math.random() * pool.length)];
+  /** Which event comes next: duels when both commanders are here, pursuit when the enemy routs, otherwise weighted by stance. */
+  private nextKind(g: Game | null): ViewKind {
+    if (this.practice) return this.practice;
+    const b = g && this.battleId !== null ? getBattle(g, this.battleId) : undefined;
+    if (!g || !b) return 'volley';
+    if (inDuel(g, b) && this.now - this.lastDuel >= DUEL_EVERY) return 'duel';
+    const foes = b.sides.filter((s) => s.owner !== 0 && s.troops > 0.5);
+    if (foes.some((f) => isRouting(b, f)) && this.last !== 'pursuit') return 'pursuit';
+    const stance = sideOf(b, 0)?.stance;
+    const favoured: QteKind | null = stance === 'assault' ? 'slash' : stance === 'hold' ? 'parry' : stance === 'skirmish' ? 'volley' : null;
+    const pool = (['volley', 'parry', 'slash', 'banner'] as QteKind[]).filter((k) => k !== this.last);
+    const weights = pool.map((k) => (k === favoured ? 2.5 : 1));
+    let r = Math.random() * weights.reduce((p, q) => p + q, 0);
+    for (let i = 0; i < pool.length; i++) if ((r -= weights[i]) <= 0) return pool[i];
+    return pool[0];
+  }
+
+  private spawn(g: Game | null = null) {
+    const kind = this.nextKind(g);
     this.last = kind;
     const a = this.area();
     const rx = () => a.x0 + 60 + Math.random() * (a.x1 - a.x0 - 120);
     const ry = () => a.y0 + 60 + Math.random() * (a.y1 - a.y0 - 120);
-    if (kind === 'volley') this.qte = { kind, t: 0, x: rx(), y: ry() };
+    if (kind === 'duel') {
+      const c = this.center();
+      this.lastDuel = this.now;
+      // In training the "enemy commander" reacts like a Normal AI.
+      const enemy = this.practice ? 0.5 * (0.85 + Math.random() * 0.3) : this.hooks.duelReaction();
+      this.qte = { kind, t: 0, fireAt: 1.0 + Math.random() * 1.4, enemy, x: c.x + (Math.random() - 0.5) * 160, y: c.y + (Math.random() - 0.5) * 80 };
+    } else if (kind === 'pursuit') {
+      const c = this.center();
+      this.qte = {
+        kind,
+        t: 0,
+        runners: [0, 1, 2].map((i) => {
+          const ang = -0.9 + i * 0.9 + (Math.random() - 0.5) * 0.4;
+          const speed = 150 + i * 45 + Math.random() * 40;
+          return { x: c.x + (Math.random() - 0.5) * 60, y: c.y + (Math.random() - 0.5) * 60, vx: Math.cos(ang) * speed, vy: Math.sin(ang) * speed * 0.7, hit: false };
+        }),
+      };
+    } else if (kind === 'volley') this.qte = { kind, t: 0, x: rx(), y: ry() };
     else if (kind === 'parry') this.qte = { kind, t: 0, ang: Math.random() * Math.PI * 2 };
     else if (kind === 'banner') this.qte = { kind, t: 0, held: 0, phase: Math.random() * 10 };
     else {
@@ -308,7 +402,7 @@ export class BattleView {
   }
 
   /** Finish the current event. `reason` explains a miss, so players learn what went wrong. */
-  private resolve(success: boolean, x: number, y: number, reason?: string) {
+  private resolve(success: boolean, x: number, y: number, reason?: string, hits = 0) {
     if (!this.qte) return;
     const kind = this.qte.kind;
     if (this.practice) {
@@ -316,12 +410,15 @@ export class BattleView {
         this.pstats[success ? 'hit' : 'miss']++;
         this.pstats.streak = success ? this.pstats.streak + 1 : 0;
       }
-      this.floaters.push({ text: success ? 'Hit!' : 'Miss', x, y, t: 0, good: success });
+      const label = kind === 'duel' ? (success ? 'Duel won!' : 'Duel lost') : kind === 'pursuit' ? `${hits} / 3 caught` : success ? 'Hit!' : 'Miss';
+      this.floaters.push({ text: label, x, y, t: 0, good: success });
       this.renderPracticePanel();
     } else {
       if (this.battleId === null) return;
-      const text = this.hooks.onQte(this.battleId, kind, success);
+      const text =
+        kind === 'duel' ? this.hooks.onDuel(this.battleId, success) : kind === 'pursuit' ? this.hooks.onPursuit(this.battleId, hits) : this.hooks.onQte(this.battleId, kind, success);
       this.floaters.push({ text: text || (success ? 'Hit' : 'Miss'), x, y, t: 0, good: success });
+      if (kind === 'duel') this.flash = 0.3;
     }
     if (!success && reason) this.floaters.push({ text: reason, x, y: y + 34, t: 0, good: false, small: true });
     if (!success && kind === 'parry') this.shake = 0.35;
@@ -370,9 +467,20 @@ export class BattleView {
         q.grabbed = true;
         q.trail = [{ x, y }];
       } else this.hint('Press on the filled dot first');
-    } else {
+    } else if (q.kind === 'banner') {
       const p = this.bannerPos(q);
       if (Math.hypot(x - p.x, y - p.y) > BANNER_R) this.hint('Hold the button down on the banner');
+    } else if (q.kind === 'duel') {
+      if (q.t < q.fireAt) return this.resolve(false, q.x, q.y, 'False start: wait for the NOW! signal');
+      if (Math.hypot(x - q.x, y - q.y) > DUEL_TARGET_R + 20) return this.hint('Click the NOW! target');
+      const reaction = q.t - q.fireAt;
+      this.resolve(reaction <= q.enemy, q.x, q.y, `Too slow: ${Math.round(reaction * 1000)} ms vs their ${Math.round(q.enemy * 1000)} ms`);
+    } else {
+      const r = q.runners.find((u) => !u.hit && Math.hypot(x - u.x, y - u.y) <= PURSUIT_R + 8);
+      if (!r) return this.hint('Click the fleeing soldiers');
+      r.hit = true;
+      this.clicks.push({ x: r.x, y: r.y, t: 0 });
+      if (q.runners.every((u) => u.hit)) this.resolve(true, r.x, r.y, undefined, 3);
     }
   }
 
@@ -397,7 +505,7 @@ export class BattleView {
   update(g: Game | null, dt: number) {
     if (this.practice) {
       this.tickCommon(dt);
-      this.tickQte(dt);
+      this.tickQte(dt, null);
       return;
     }
     if (this.battleId === null || !g) return;
@@ -411,7 +519,7 @@ export class BattleView {
       if (this.now - this.endShownAt > 1.6) this.hooks.onLeave();
       return;
     }
-    this.tickQte(dt);
+    this.tickQte(dt, g);
   }
 
   private tickCommon(dt: number) {
@@ -421,22 +529,34 @@ export class BattleView {
     this.floaters = this.floaters.filter((f) => f.t < (f.small ? 2.2 : 1.3));
     for (const c of this.clicks) c.t += dt;
     this.clicks = this.clicks.filter((c) => c.t < 0.5);
+    this.flash = Math.max(0, this.flash - dt);
   }
 
-  private tickQte(dt: number) {
+  private tickQte(dt: number, g: Game | null) {
     if (!this.qte) {
       if (this.demo) this.mouse.down = false;
       this.gap -= dt;
-      if (this.gap <= 0) this.spawn();
+      if (this.gap <= 0) this.spawn(g);
       return;
     }
     const q = this.qte;
     q.t += dt;
+    if (q.kind === 'pursuit') {
+      for (const r of q.runners) {
+        if (r.hit) continue;
+        r.x += r.vx * dt;
+        r.y += r.vy * dt;
+      }
+    }
     if (this.demo) {
       this.demoStep(dt);
       if (!this.qte) return;
     }
-    if (q.kind === 'volley' && q.t > VOLLEY_LIFE) this.resolve(false, q.x, q.y, 'Missed: click the target as the rings meet');
+    if (q.kind === 'duel' && q.t > q.fireAt + q.enemy) this.resolve(false, q.x, q.y, 'Too slow: the enemy commander struck first');
+    else if (q.kind === 'pursuit' && q.t >= PURSUIT_TIME) {
+      const hits = q.runners.filter((r) => r.hit).length;
+      this.resolve(hits > 0, this.center().x, this.center().y, hits ? undefined : 'They got away: click the runners as they flee', hits);
+    } else if (q.kind === 'volley' && q.t > VOLLEY_LIFE) this.resolve(false, q.x, q.y, 'Missed: click the target as the rings meet');
     else if (q.kind === 'parry' && q.t >= PARRY_TIME) {
       const c = this.center();
       this.resolve(false, c.x, c.y, 'Too slow: click the spear before it hits your shield');
@@ -487,12 +607,27 @@ export class BattleView {
         this.mouse.y = q.ay + (q.by - q.ay) * f;
         this.drag();
       }
-    } else {
+    } else if (q.kind === 'banner') {
       const p = this.bannerPos(q);
       glide(p.x, p.y, 14);
       if (q.t > 0.35 && !this.mouse.down) {
         this.mouse.down = true;
         this.clicks.push({ x: this.mouse.x, y: this.mouse.y, t: 0 });
+      }
+    } else if (q.kind === 'duel') {
+      // Wait near the centre, then click a quarter-second after the signal.
+      glide(q.x, q.y, 6);
+      if (q.t >= q.fireAt + 0.25) {
+        click(q.x, q.y);
+        this.press();
+      }
+    } else {
+      const next = q.runners.find((r) => !r.hit);
+      if (!next) return;
+      glide(next.x, next.y, 16);
+      if (Math.hypot(this.mouse.x - next.x, this.mouse.y - next.y) < 12) {
+        click(next.x, next.y);
+        this.press();
       }
     }
   }
@@ -563,6 +698,11 @@ export class BattleView {
       }
       ctx.globalAlpha = 1;
     }
+    if (this.flash > 0) {
+      ctx.fillStyle = `rgba(255,230,200,${this.flash})`;
+      ctx.fillRect(0, 0, this.w, this.h);
+    }
+    if (!this.practice && g) this.drawPressure(g, b);
     if (this.demo) this.drawCursor();
     if (!this.practice && g) this.updateDom(g, b);
   }
@@ -788,6 +928,65 @@ export class BattleView {
         ctx.stroke();
       }
       this.label('SLASH · drag from the filled mark to the ring', (q.ax + q.bx) / 2, Math.max(q.ay, q.by) + 60);
+    } else if (q.kind === 'duel') {
+      const fired = q.t >= q.fireAt;
+      ctx.fillStyle = fired ? 'rgba(80,0,10,0.35)' : 'rgba(0,0,0,0.45)';
+      ctx.fillRect(0, 0, this.w, this.h);
+      if (!fired) {
+        // Crossed swords, trembling: wait.
+        const j = Math.sin(this.now * 30) * 2;
+        ctx.strokeStyle = '#ffe1c2';
+        ctx.lineWidth = 8;
+        ctx.beginPath();
+        ctx.moveTo(q.x - 60 + j, q.y + 60);
+        ctx.lineTo(q.x + 60 + j, q.y - 60);
+        ctx.moveTo(q.x + 60 - j, q.y + 60);
+        ctx.lineTo(q.x - 60 - j, q.y - 60);
+        ctx.stroke();
+        ctx.font = '700 40px "Bebas Neue", sans-serif';
+        ctx.textAlign = 'center';
+        ctx.fillStyle = '#ff8a98';
+        ctx.fillText('DUEL', q.x, q.y - 90);
+        this.label('Wait for the signal… clicking early loses', q.x, q.y + 100);
+      } else {
+        const pulse = 1 + 0.06 * Math.sin(this.now * 25);
+        ctx.fillStyle = '#e2364d';
+        ctx.strokeStyle = '#fff';
+        ctx.lineWidth = 5;
+        ctx.beginPath();
+        ctx.arc(q.x, q.y, DUEL_TARGET_R * pulse, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
+        ctx.font = '700 46px "Bebas Neue", sans-serif';
+        ctx.textAlign = 'center';
+        ctx.fillStyle = '#fff';
+        ctx.fillText('NOW!', q.x, q.y + 16);
+      }
+    } else if (q.kind === 'pursuit') {
+      for (const r of q.runners) {
+        if (r.hit) continue;
+        const bob = Math.sin(this.now * 20 + r.x) * 3;
+        ctx.fillStyle = 'rgba(159,240,181,0.18)';
+        ctx.beginPath();
+        ctx.arc(r.x, r.y, PURSUIT_R, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.strokeStyle = '#9ff0b5';
+        ctx.lineWidth = 3;
+        ctx.stroke();
+        ctx.fillStyle = OWNER_DARK[1];
+        ctx.strokeStyle = OWNER_COLOR[1];
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.roundRect(r.x - 8, r.y - 8 + bob, 16, 22, 6);
+        ctx.fill();
+        ctx.stroke();
+        ctx.fillStyle = OWNER_LIGHT[1];
+        ctx.beginPath();
+        ctx.arc(r.x, r.y - 14 + bob, 7, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      const c = this.center();
+      this.label(`PURSUIT · click the fleeing soldiers (${q.runners.filter((r) => r.hit).length}/3)`, c.x, this.area().y1 + 10);
     } else {
       const p = this.bannerPos(q);
       const prog = q.held / BANNER_NEED;
@@ -833,6 +1032,46 @@ export class BattleView {
     ctx.fillText(text, x, y + 1);
   }
 
+  /** Edge arrows pointing (in map direction) toward your other battles that are going badly. Click one to jump there. */
+  private drawPressure(g: Game, b: Battle) {
+    const { ctx, w, h } = this;
+    this.arrows = [];
+    for (const o of activeBattles(g)) {
+      if (o.id === b.id) continue;
+      const me = sideOf(o, 0)?.troops ?? 0;
+      if (me <= 0.5) continue;
+      const foe = o.sides.filter((s) => s.owner !== 0).reduce((t, s) => t + Math.max(0, s.troops), 0);
+      if (me / (me + foe) >= 0.4) continue;
+      const ang = Math.atan2(o.y - b.y, o.x - b.x);
+      // Project the direction onto a frame inside the screen, clear of the header, side panel and bottom bar.
+      const x0 = 70;
+      const x1 = w - 270;
+      const y0 = 170;
+      const y1 = h - 120;
+      const cx = (x0 + x1) / 2;
+      const cy = (y0 + y1) / 2;
+      const k = Math.min((x1 - x0) / 2 / Math.abs(Math.cos(ang) || 1e-6), (y1 - y0) / 2 / Math.abs(Math.sin(ang) || 1e-6));
+      const x = cx + Math.cos(ang) * k;
+      const y = cy + Math.sin(ang) * k;
+      const pulse = 0.6 + 0.4 * Math.sin(this.now * 10);
+      ctx.save();
+      ctx.translate(x, y);
+      ctx.rotate(ang);
+      ctx.fillStyle = `rgba(255,90,90,${pulse})`;
+      ctx.beginPath();
+      ctx.moveTo(26, 0);
+      ctx.lineTo(-10, -18);
+      ctx.lineTo(-4, 0);
+      ctx.lineTo(-10, 18);
+      ctx.closePath();
+      ctx.fill();
+      ctx.restore();
+      const name = battleName(g, o).replace('Battle of ', '').replace('Ambush on the ', '');
+      this.label(`${name} ${Math.ceil(me)} vs ${Math.ceil(foe)}`, x - Math.cos(ang) * 40, y - Math.sin(ang) * 40 + 6);
+      this.arrows.push({ x, y, id: o.id });
+    }
+  }
+
   private updateDom(g: Game, b: Battle) {
     const { left, right } = this.sides(b);
     const e = this.els;
@@ -845,13 +1084,23 @@ export class BattleView {
     e.lc.textContent = String(Math.ceil(left.troops));
     e.rc.textContent = String(Math.ceil(right.troops));
     const me = sideOf(b, 0);
-    e.lm.textContent = `You${me && sideDefense(g, b, me) > 1 ? ` · walls ×${sideDefense(g, b, me)}` : ''}`;
+    const tag = (s: typeof me) => (s?.stance ? ` · ${STANCES[s.stance].label}` : '') + (s && sideDefense(g, b, s) > 1 ? ` · walls ×${sideDefense(g, b, s)}` : '') + (s && isRouting(b, s) ? ' · ROUTING' : '');
+    e.lm.textContent = `You${tag(me)}`;
     const foe = b.sides.find((s) => s.owner === right.owner);
-    e.rm.textContent = `${right.owner === 2 ? 'Neutral' : 'Enemy'}${foe && sideDefense(g, b, foe) > 1 ? ` · walls ×${sideDefense(g, b, foe)}` : ''}`;
+    e.rm.textContent = `${right.owner === 2 ? 'Neutral' : 'Enemy'}${tag(foe)}`;
     const pct = (m: number) => `${Math.max(0, Math.min(100, ((m - 0.5) / 3.5) * 100))}%`;
     e.lb.style.width = pct(left.momentum);
     e.rb.style.width = pct(right.momentum);
     e.cmdr.classList.toggle('hidden', g.presence[1] !== b.id);
+    e.cmdr.textContent = inDuel(g, b) ? 'DUEL: the enemy commander is here. Watch for the signal!' : 'Enemy commander is here';
+    // Rally meter, finisher and retreat.
+    const rally = me?.rally ?? 0;
+    e.rallyfill.style.width = `${rally * 100}%`;
+    e.charge.classList.toggle('hidden', rally < 1);
+    e.rally.classList.toggle('full', rally >= 1);
+    const canRetreat = !!me && me.troops > 0.5 && this.hooks.canRetreat(b.id);
+    (e.retreat as HTMLButtonElement).disabled = !canRetreat;
+    e.retreat.classList.toggle('urgent', !!me && isRouting(b, me) && canRetreat);
     const over = b.endedAt !== null || !me || me.troops <= 0.5;
     e.result.classList.toggle('hidden', !over);
     if (over) {

@@ -1,9 +1,28 @@
 import './style.css';
-import { aiStep, createAi, type AiState, type Difficulty } from './ai';
+import { aiStep, createAi, duelReaction, type AiState, type Difficulty } from './ai';
 import { BattleView } from './battleview';
 import { NODE_STATS, WORLD_H, WORLD_W, generateMap, type GraphMap } from './map';
 import { MapRenderer, OWNER_COLOR, nodeRadius, paintBackground } from './render';
-import { MATCH_TIME, activeBattles, applyQte, battleName, createGame, getBattle, sendTroops, sideOf, step, type Game } from './sim';
+import {
+  MATCH_TIME,
+  STANCES,
+  activeBattles,
+  applyDuel,
+  applyPursuit,
+  applyQte,
+  battleName,
+  createGame,
+  getBattle,
+  inDuel,
+  retreat,
+  retreatTarget,
+  sendTroops,
+  sideOf,
+  step,
+  useFinisher,
+  type Game,
+  type Stance,
+} from './sim';
 
 const STEP = 1 / 20;
 
@@ -14,6 +33,7 @@ interface Settings {
 }
 const settings: Settings = { nodes: 8, difficulty: 'normal', seed: randomSeed() };
 let ratio = 0.5;
+let stance: Stance = 'assault';
 
 function randomSeed() {
   return Math.floor(Math.random() * 99999) + 1;
@@ -40,6 +60,8 @@ app.innerHTML = `
     <div class="seg" id="ratio">
       <button data-r="0.25">25%</button><button data-r="0.5">50%</button><button data-r="0.75">75%</button><button data-r="1">All</button>
     </div>
+    <span class="dock-lbl">Stance</span>
+    <div class="seg" id="stance">${(Object.keys(STANCES) as Stance[]).map((k) => `<button data-s="${k}" title="${STANCES[k].desc}">${STANCES[k].label}</button>`).join('')}</div>
     <div class="battles" id="battle-list"></div>
   </div>
   <div class="tip hidden" id="tip"></div>
@@ -78,7 +100,13 @@ app.innerHTML = `
           <p>The war clock runs 12 minutes. If no capital falls, whoever holds more strongholds wins.</p>
           <h3>Battles</h3>
           <p>Click a battle (the crossed swords) to <b>enter it</b>. Left alone, numbers decide it. Inside, quick-time events swing the fight, but the map is hidden and the war goes on without you.</p>
-          <p>The enemy has a commander too, and it can only be in one battle. Its flag shows where it is: strike somewhere else.</p>
+          <p>The enemy has a commander too, and it can only be in one battle. Its flag shows where it is: strike somewhere else, or go there and <b>duel</b> it.</p>
+          <h3>Battle tools</h3>
+          <p><b>Rally &amp; Charge:</b> every hit fills your rally meter (4 hits). When full, click <b>CHARGE!</b> to cut down a quarter of the enemy.</p>
+          <p><b>Retreat:</b> pull your troops back to the nearest stronghold you hold, keeping 85%. It pulses when your side is routing.</p>
+          <p><b>Rout:</b> a side below a quarter of its peak breaks and takes 25% extra losses. Chase a routing enemy with <b>Pursuit</b>.</p>
+          <p><b>Stances</b> (dock): Assault +20% damage, Hold −20% damage taken, Skirmish +25% march speed. Each brings more of one event type.</p>
+          <p>Red arrows at the screen edge point to your other battles that are going badly. Click one to jump there.</p>
         </div>
         <div>
           <h3>Quick-time events (mouse only)</h3>
@@ -123,6 +151,15 @@ const bv = new BattleView($('bv'), {
   onQte: (battleId, kind, success) => (game ? applyQte(game, battleId, 0, kind, success) : ''),
   onLeave: () => leaveBattle(),
   onSwitch: (id) => enterBattle(id),
+  onFinisher: (id) => (game ? useFinisher(game, id, 0) : ''),
+  onRetreat: (id) => !!(game && retreat(game, id, 0)),
+  canRetreat: (id) => {
+    const b = game && getBattle(game, id);
+    return !!(game && b && retreatTarget(game, b, 0) !== null);
+  },
+  onDuel: (id, won) => (game ? applyDuel(game, id, won ? 0 : 1) : ''),
+  onPursuit: (id, hits) => (game ? applyPursuit(game, id, 0, hits) : ''),
+  duelReaction: () => (ai ? duelReaction(ai) : 0.5),
   onPracticeExit: () => $("setup").classList.remove("hidden"),
 });
 
@@ -238,6 +275,8 @@ function showEnd() {
     '<tr><th></th><th>You</th><th>Enemy</th></tr>' +
     row('Battles fought / won', `${a.battlesFought} / ${a.battlesWon}`, `${b.battlesFought} / ${b.battlesWon}`) +
     row('Quick-time events', `${a.qteHit} / ${a.qtePlayed} (${pct(a.qteHit, a.qtePlayed)})`, `${b.qteHit} / ${b.qtePlayed} (${pct(b.qteHit, b.qtePlayed)})`) +
+    row('Charges / retreats', `${a.finishers} / ${a.retreats}`, `${b.finishers} / ${b.retreats}`) +
+    row('Duels won', `${a.duelsWon} / ${a.duels}`, `${b.duelsWon} / ${b.duels}`) +
     row('Strongholds taken', a.nodesTaken, b.nodesTaken) +
     row('Troops sent', a.troopsSent, b.troopsSent);
   $('end').classList.remove('hidden');
@@ -297,7 +336,7 @@ window.addEventListener('mouseup', () => {
     return;
   }
   if (drag.target !== null) {
-    const col = sendTroops(game, 0, drag.from, drag.target, drag.amount);
+    const col = sendTroops(game, 0, drag.from, drag.target, drag.amount, stance);
     if (!col) toast('Not enough troops to send', 'nosend');
   }
   drag = null;
@@ -331,6 +370,12 @@ function setRatio(r: number) {
 }
 document.querySelectorAll<HTMLElement>('#ratio button').forEach((b) => b.addEventListener('click', () => setRatio(Number(b.dataset.r))));
 setRatio(0.5);
+function setStance(s: Stance) {
+  stance = s;
+  document.querySelectorAll<HTMLElement>('#stance button').forEach((b) => b.classList.toggle('on', b.dataset.s === s));
+}
+document.querySelectorAll<HTMLElement>('#stance button').forEach((b) => b.addEventListener('click', () => setStance(b.dataset.s as Stance)));
+setStance('assault');
 $('battle-list').addEventListener('click', (e) => {
   const id = (e.target as HTMLElement).closest<HTMLElement>('[data-bid]')?.dataset.bid;
   if (id) enterBattle(Number(id));
@@ -411,7 +456,7 @@ function updateHud(g: Game) {
   $('battle-list').innerHTML = mine
     .map(
       ({ b, me, foe, r }) =>
-        `<button data-bid="${b.id}" class="${r < 0.4 ? 'losing' : ''}"><span>${battleName(g, b).replace('Battle of ', '').replace('Ambush on the ', '')}${g.presence[1] === b.id ? ' <i>· enemy cmdr</i>' : ''}</span><div class="bar"><div style="width:${r * 100}%"></div></div><small>${Math.ceil(me)} vs ${Math.ceil(foe)}</small></button>`,
+        `<button data-bid="${b.id}" class="${r < 0.4 ? 'losing' : ''}"><span>${battleName(g, b).replace('Battle of ', '').replace('Ambush on the ', '')}${inDuel(g, b) ? ' <i>· DUEL</i>' : g.presence[1] === b.id ? ' <i>· enemy cmdr</i>' : ''}</span><div class="bar"><div style="width:${r * 100}%"></div></div><small>${Math.ceil(me)} vs ${Math.ceil(foe)}</small></button>`,
     )
     .join('');
   // Toasts for new events.
