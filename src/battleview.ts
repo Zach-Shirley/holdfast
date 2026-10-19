@@ -48,7 +48,7 @@ export const DRILLS: Record<QteKind, { name: string; color: string; steps: strin
       'Click the target the moment the white ring touches its orange edge.',
       'Clicking too early or too late is a miss. Clicks off the target are ignored.',
     ],
-    effect: 'Kills about 7% of the enemy troops in the battle.',
+    effect: 'Kills about 21% of the enemy troops in the battle (plus 3).',
     tip: 'Watch the ring, not the target. The target glows brighter while you are inside the timing window.',
   },
   parry: {
@@ -59,7 +59,7 @@ export const DRILLS: Record<QteKind, { name: string; color: string; steps: strin
       'Click the spear head (inside the flashing circle) any time before it reaches the shield.',
       'There is no "too early": click it as soon as you see it.',
     ],
-    effect: 'Hit: your side gains momentum. Miss: the charge kills about 7% of your troops.',
+    effect: 'Hit: a big momentum boost (your side fights about 45% harder, fading over time). Miss: the charge kills about 7% of your troops.',
     tip: 'The spear comes from a random direction. Move your mouse toward it straight away.',
   },
   slash: {
@@ -70,7 +70,7 @@ export const DRILLS: Record<QteKind, { name: string; color: string; steps: strin
       'Press and hold the mouse on the filled dot.',
       'Keep holding and drag along the dashes into the ring. Letting go early or straying far off the line is a miss.',
     ],
-    effect: 'Your side fights 30% harder for a while (momentum).',
+    effect: 'Your side fights about 90% harder, fading over time (momentum).',
     tip: 'You have over 2 seconds: a steady drag beats a fast flick.',
   },
   banner: {
@@ -81,7 +81,7 @@ export const DRILLS: Record<QteKind, { name: string; color: string; steps: strin
       'Press and hold the mouse button with the cursor on the banner.',
       'Follow it while holding until the gold ring around it fills (about 1 second in total).',
     ],
-    effect: 'Kills about 4% of the enemy and adds momentum.',
+    effect: 'Kills about 12% of the enemy (plus 3) and adds a big momentum boost.',
     tip: 'Time only counts while the button is down and the cursor is on the banner. Slipping off just pauses the ring.',
   },
 };
@@ -848,7 +848,7 @@ export class BattleView {
     e.lm.textContent = `You${me && sideDefense(g, b, me) > 1 ? ` · walls ×${sideDefense(g, b, me)}` : ''}`;
     const foe = b.sides.find((s) => s.owner === right.owner);
     e.rm.textContent = `${right.owner === 2 ? 'Neutral' : 'Enemy'}${foe && sideDefense(g, b, foe) > 1 ? ` · walls ×${sideDefense(g, b, foe)}` : ''}`;
-    const pct = (m: number) => `${Math.max(0, Math.min(100, ((m - 0.5) / 1.7) * 100))}%`;
+    const pct = (m: number) => `${Math.max(0, Math.min(100, ((m - 0.5) / 3.5) * 100))}%`;
     e.lb.style.width = pct(left.momentum);
     e.rb.style.width = pct(right.momentum);
     e.cmdr.classList.toggle('hidden', g.presence[1] !== b.id);

@@ -82,7 +82,7 @@ app.innerHTML = `
         </div>
         <div>
           <h3>Quick-time events (mouse only)</h3>
-          <p><span class="ic volley"></span><b>Volley</b>: click the target when the closing ring meets it. Kills enemy troops.</p>
+          <p><span class="ic volley"></span><b>Volley</b>: click the target when the closing ring meets it. Kills a big chunk of enemy troops.</p>
           <p><span class="ic parry"></span><b>Parry</b>: click the incoming spear before it reaches your shield. Miss and you lose troops.</p>
           <p><span class="ic slash"></span><b>Slash</b>: press on the filled mark and drag to the ring along the line. Boosts momentum.</p>
           <p><span class="ic banner"></span><b>Banner</b>: hold the mouse on the moving banner until the ring fills. Kills and boosts.</p>

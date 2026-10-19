@@ -11,7 +11,9 @@ export const COLUMN_SPEED = 55;
 export const BASE_LOSS = 0.6;
 export const PER_TROOP_LOSS = 0.045;
 export const MOMENTUM_MIN = 0.5;
-export const MOMENTUM_MAX = 2.2;
+export const MOMENTUM_MAX = 4;
+/** Multiplier on every quick-time success (tripled after playtest feedback, 2026-10-19). */
+export const QTE_POWER = 3;
 /** Momentum drifts back toward 1 at this rate per second. */
 export const MOMENTUM_DECAY = 0.06;
 /** War clock: when it runs out, whoever holds more strongholds wins (troops break ties). */
@@ -323,7 +325,7 @@ export function applyQte(g: Game, battleId: number, owner: Player, kind: QteKind
   const enemies = b.sides.filter((s) => s.owner !== owner && s.troops > 0);
   const enemyTotal = enemies.reduce((t, s) => t + s.troops, 0);
   const kill = (frac: number) => {
-    const k = enemyTotal * frac + 1;
+    const k = (enemyTotal * frac + 1) * QTE_POWER;
     for (const e of enemies) e.troops -= (k * e.troops) / Math.max(1, enemyTotal);
     return Math.round(k);
   };
@@ -333,7 +335,7 @@ export function applyQte(g: Game, battleId: number, owner: Player, kind: QteKind
       return success ? `Volley! ${kill(0.07)} down` : 'Volley missed';
     case 'parry':
       if (success) {
-        bump(0.15);
+        bump(0.15 * QTE_POWER);
         return 'Charge parried';
       } else {
         const lost = me.troops * 0.07 + 1;
@@ -341,11 +343,11 @@ export function applyQte(g: Game, battleId: number, owner: Player, kind: QteKind
         return `Charge broke through: −${Math.round(lost)}`;
       }
     case 'slash':
-      bump(success ? 0.3 : -0.1);
+      bump(success ? 0.3 * QTE_POWER : -0.1);
       return success ? 'Line broken: momentum up' : 'Slash fumbled';
     case 'banner':
       if (!success) return 'Banner lost';
-      bump(0.15);
+      bump(0.15 * QTE_POWER);
       return `Rallied to the banner: ${kill(0.04)} down`;
   }
 }
