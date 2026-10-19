@@ -33,6 +33,19 @@ npm run build
   - **Rout:** a side below 25% of its peak takes +25% losses. A routing enemy triggers **Pursuit** (click 3 fleeing soldiers); your own rout makes Retreat pulse.
   - **Commander duels:** when both commanders are in one battle, a duel breaks out about every 6 s. Wait for the signal, then click NOW! faster than the enemy (Normal: about 0.5 s). The winner kills 15% + 3 of the loser and surges.
   - **Pressure cues:** battles you are losing pulse red on the map. Inside a battle, red edge arrows point toward them; click one to jump there.
+- **Feel and feedback (Phase 2, 2026-10-19):**
+  - **Sound,** all synthesized with Web Audio (no audio files):
+    - a tone that rises as the Volley ring closes, peaking at the hit moment, so it can be timed by ear
+    - a whoosh that sweeps up as the spear comes in
+    - hit and miss stingers, a duel signal, a charge horn, Banner ticks while holding, and Pursuit catches
+    - a battle rumble with sword clangs in the battle view
+    - an enemy-attack horn when one of your strongholds is hit, and capture and loss stingers
+    - victory and defeat themes
+    - war drums whose tempo and layers grow with the number of battles you are in
+  - Audio starts on your first click, as browsers require. Press **M** or the HUD button to mute.
+  - **Visible kills:** soldiers drop out of the front ranks and tumble back as troops die.
+  - **Map:** dust trails behind marching columns, a ring-and-flag burst when a stronghold changes hands, and a red flash at the screen edge when you lose one.
+  - **Settings** (start screen or ⚙ in the HUD, remembered in the browser): volume and mute, quick-time speed (80/100/120%; timing only, effects unchanged), and team colours (red vs blue, or high-contrast orange vs blue).
 - **Training** (start screen): pick any of the six events (including Duel and Pursuit), read the steps, **watch a demo** where a ghost cursor performs it, then **practise** it on repeat with hits, misses and a streak counter.
 - **Enemy commander:** the AI plays the same quick-time events, one battle at a time, with a switching delay and a success rate set by difficulty (easy 55%, normal 70%, hard 82%). It deliberately attacks where your commander is not.
 - **Winning:** take the enemy capital. A 12-minute war clock breaks deadlocks: at zero, whoever holds more strongholds wins, with total troops as the tiebreak.

@@ -1,5 +1,6 @@
 import { NODE_STATS } from './map';
 import { OWNER_COLOR, OWNER_DARK, OWNER_LIGHT } from './render';
+import { setBattleAmbience, sfx, spearWhoosh, volleyTone, type Voice } from './sound';
 import { STANCES, activeBattles, battleName, getBattle, inDuel, isRouting, sideDefense, sideOf, type Battle, type Game, type Owner, type QteKind } from './sim';
 
 /** Everything the battle view can throw at you: the four basics plus situational events. */
@@ -160,6 +161,13 @@ export class BattleView {
   private gap = FIRST;
   private last: ViewKind | null = null;
   private lastDuel = -99;
+  /** Quick-time speed from settings: 0.8 slower, 1.2 faster. */
+  timeScale = 1;
+  private voice: Voice | null = null;
+  private bannerTick = 0;
+  /** Soldiers knocked down when troops die, drawn tumbling and fading. */
+  private fallers: { x: number; y: number; vx: number; vy: number; rot: number; spin: number; t: number; owner: Owner; s: number }[] = [];
+  private shown: { l: number; r: number } | null = null;
   private flash = 0;
   private arrows: { x: number; y: number; id: number }[] = [];
   private floaters: Floater[] = [];
@@ -203,12 +211,16 @@ export class BattleView {
     this.ctx = this.canvas.getContext('2d')!;
     this.els.leave.addEventListener('click', () => this.hooks.onLeave());
     this.els.retreat.addEventListener('click', () => {
-      if (this.battleId !== null && this.hooks.onRetreat(this.battleId)) this.hooks.onLeave();
+      if (this.battleId !== null && this.hooks.onRetreat(this.battleId)) {
+        sfx('retreat');
+        this.hooks.onLeave();
+      }
     });
     this.els.charge.addEventListener('click', () => {
       if (this.battleId === null) return;
       const text = this.hooks.onFinisher(this.battleId);
       if (!text) return;
+      sfx('charge');
       this.floaters.push({ text, x: this.w / 2, y: this.h * 0.45, t: 0, good: true });
       this.shake = 0.35;
       this.flash = 0.35;
@@ -265,11 +277,17 @@ export class BattleView {
     this.floaters = [];
     this.flash = 0;
     this.shake = 0;
+    this.fallers = [];
+    this.shown = null;
+    setBattleAmbience(true);
     this.root.classList.remove('hidden');
     this.resize();
   }
 
   hide() {
+    this.voice?.stop();
+    this.voice = null;
+    setBattleAmbience(false);
     this.battleId = null;
     this.practice = null;
     this.demo = false;
@@ -292,6 +310,9 @@ export class BattleView {
     this.gap = 0.6;
     this.floaters = [];
     this.mouse.down = false;
+    this.voice?.stop();
+    this.voice = null;
+    setBattleAmbience(true);
     this.root.classList.remove('hidden');
     this.root.classList.add('practicing');
     this.resize();
@@ -390,8 +411,14 @@ export class BattleView {
           return { x: c.x + (Math.random() - 0.5) * 60, y: c.y + (Math.random() - 0.5) * 60, vx: Math.cos(ang) * speed, vy: Math.sin(ang) * speed * 0.7, hit: false };
         }),
       };
-    } else if (kind === 'volley') this.qte = { kind, t: 0, x: rx(), y: ry() };
-    else if (kind === 'parry') this.qte = { kind, t: 0, ang: Math.random() * Math.PI * 2 };
+    } else if (kind === 'volley') {
+      this.qte = { kind, t: 0, x: rx(), y: ry() };
+      this.voice = volleyTone(VOLLEY_HIT / this.timeScale);
+    }
+    else if (kind === 'parry') {
+      this.qte = { kind, t: 0, ang: Math.random() * Math.PI * 2 };
+      this.voice = spearWhoosh(PARRY_TIME / this.timeScale);
+    }
     else if (kind === 'banner') this.qte = { kind, t: 0, held: 0, phase: Math.random() * 10 };
     else {
       const c = this.center();
@@ -405,6 +432,15 @@ export class BattleView {
   private resolve(success: boolean, x: number, y: number, reason?: string, hits = 0) {
     if (!this.qte) return;
     const kind = this.qte.kind;
+    this.voice?.stop();
+    this.voice = null;
+    if (kind === 'duel') sfx(success ? 'duelWin' : 'duelLose');
+    else if (!success) sfx('miss');
+    else if (kind === 'slash') {
+      sfx('slash');
+      sfx('hit');
+    } else if (kind === 'parry') sfx('parried');
+    else if (kind !== 'pursuit') sfx('hit');
     if (this.practice) {
       if (!this.demo) {
         this.pstats[success ? 'hit' : 'miss']++;
@@ -479,6 +515,7 @@ export class BattleView {
       const r = q.runners.find((u) => !u.hit && Math.hypot(x - u.x, y - u.y) <= PURSUIT_R + 8);
       if (!r) return this.hint('Click the fleeing soldiers');
       r.hit = true;
+      sfx('catch');
       this.clicks.push({ x: r.x, y: r.y, t: 0 });
       if (q.runners.every((u) => u.hit)) this.resolve(true, r.x, r.y, undefined, 3);
     }
@@ -532,7 +569,8 @@ export class BattleView {
     this.flash = Math.max(0, this.flash - dt);
   }
 
-  private tickQte(dt: number, g: Game | null) {
+  private tickQte(rawDt: number, g: Game | null) {
+    const dt = rawDt * this.timeScale;
     if (!this.qte) {
       if (this.demo) this.mouse.down = false;
       this.gap -= dt;
@@ -540,7 +578,9 @@ export class BattleView {
       return;
     }
     const q = this.qte;
+    const before = q.t;
     q.t += dt;
+    if (q.kind === 'duel' && before < q.fireAt && q.t >= q.fireAt) sfx('duelSignal');
     if (q.kind === 'pursuit') {
       for (const r of q.runners) {
         if (r.hit) continue;
@@ -563,7 +603,14 @@ export class BattleView {
     } else if (q.kind === 'slash' && q.t >= SLASH_TIME) this.resolve(false, q.bx, q.by, 'Too slow: press the dot, then drag to the ring');
     else if (q.kind === 'banner') {
       const p = this.bannerPos(q);
-      if (this.mouse.down && Math.hypot(this.mouse.x - p.x, this.mouse.y - p.y) <= BANNER_R) q.held += dt;
+      if (this.mouse.down && Math.hypot(this.mouse.x - p.x, this.mouse.y - p.y) <= BANNER_R) {
+        q.held += dt;
+        this.bannerTick -= dt;
+        if (this.bannerTick <= 0) {
+          this.bannerTick = 0.2;
+          sfx('bannerTick');
+        }
+      }
       if (q.held >= BANNER_NEED) this.resolve(true, p.x, p.y);
       else if (q.t >= BANNER_TIME) this.resolve(false, p.x, p.y, 'Hold the button down with the cursor on the banner');
     }
@@ -766,6 +813,7 @@ export class BattleView {
     const front = mid + ((left.troops - right.troops) / total) * w * 0.14;
     this.drawArmy(left.troops, front, horizon, -1, left.owner, left.momentum);
     this.drawArmy(right.troops, front, horizon, 1, right.owner, right.momentum);
+    this.drawFallers(left, right, front, horizon);
     // Dust and sparks on the clash line.
     for (let i = 0; i < 26; i++) {
       const t = this.now * (0.6 + (i % 5) * 0.2) + i * 1.37;
@@ -784,6 +832,61 @@ export class BattleView {
     vg.addColorStop(1, 'rgba(0,0,0,0)');
     ctx.fillStyle = vg;
     ctx.fillRect(0, 0, w, h);
+  }
+
+  /** Troops lost since the last frame drop out of the front ranks, tumbling back and fading. */
+  private drawFallers(left: { owner: Owner; troops: number }, right: { owner: Owner; troops: number }, front: number, horizon: number) {
+    const { ctx, h } = this;
+    const depth = h - horizon - 40;
+    const dt = 1 / 60;
+    if (this.shown) {
+      for (const [side, cur, prev, dir] of [
+        [left, left.troops, this.shown.l, -1],
+        [right, right.troops, this.shown.r, 1],
+      ] as const) {
+        const lost = prev - cur;
+        // Only whole soldiers fall; small trickles accumulate until they add up to one.
+        const n = Math.min(10, Math.floor(lost));
+        for (let i = 0; i < n; i++) {
+          const y = horizon + 34 + Math.random() * depth * 0.9;
+          const persp = 0.6 + ((y - horizon) / depth) * 0.7;
+          this.fallers.push({ x: front + dir * (26 + Math.random() * 70 * persp), y, vx: dir * (50 + Math.random() * 70), vy: -90 - Math.random() * 60, rot: 0, spin: dir * (3 + Math.random() * 4), t: 0, owner: side.owner, s: 9 * persp });
+        }
+        if (n > 0) {
+          if (dir < 0) this.shown.l -= n;
+          else this.shown.r -= n;
+        }
+      }
+      // Reinforcements arriving raise the baseline without spawning fallers.
+      this.shown.l = Math.max(this.shown.l, left.troops);
+      this.shown.r = Math.max(this.shown.r, right.troops);
+    } else this.shown = { l: left.troops, r: right.troops };
+    for (const f of this.fallers) {
+      f.t += dt;
+      f.x += f.vx * dt;
+      f.y += f.vy * dt;
+      f.vy += 320 * dt;
+      f.rot += f.spin * dt;
+    }
+    this.fallers = this.fallers.filter((f) => f.t < 1.1);
+    for (const f of this.fallers) {
+      ctx.save();
+      ctx.globalAlpha = Math.max(0, 1 - f.t / 1.1);
+      ctx.translate(f.x, f.y);
+      ctx.rotate(f.rot);
+      ctx.fillStyle = OWNER_DARK[f.owner];
+      ctx.strokeStyle = OWNER_COLOR[f.owner];
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.roundRect(-f.s * 0.8, -f.s * 0.6, f.s * 1.6, f.s * 2.4, f.s * 0.5);
+      ctx.fill();
+      ctx.stroke();
+      ctx.fillStyle = OWNER_LIGHT[f.owner];
+      ctx.beginPath();
+      ctx.arc(0, -f.s * 1.2, f.s * 0.62, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+    }
   }
 
   /** Rows of soldiers marching toward the clash line from one side. */

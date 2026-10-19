@@ -44,7 +44,7 @@ What is thin today:
 
 Verification: unit tests for each mechanic; extend the AI-vs-AI sweep; a "commander with finisher beats one without" test; browser checks with real mouse input.
 
-## Phase 2: Feel and feedback (cheap, big engagement gain)
+## Phase 2: Feel and feedback (BUILT 2026-10-19)
 
 *About 1–1.5 days. Confidence: high. Can be interleaved with any phase.*
 

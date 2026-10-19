@@ -2,7 +2,9 @@ import './style.css';
 import { aiStep, createAi, duelReaction, type AiState, type Difficulty } from './ai';
 import { BattleView } from './battleview';
 import { NODE_STATS, WORLD_H, WORLD_W, generateMap, type GraphMap } from './map';
-import { MapRenderer, OWNER_COLOR, nodeRadius, paintBackground } from './render';
+import { MapRenderer, OWNER_COLOR, applyPalette, nodeRadius, paintBackground } from './render';
+import { prefs, savePrefs } from './prefs';
+import { applyVolume, audioSettings, audioState, initAudio, setIntensity, setMusic, sfx } from './sound';
 import {
   MATCH_TIME,
   STANCES,
@@ -51,7 +53,9 @@ app.innerHTML = `
     </div>
     <div class="right">
       <span class="clock" id="clock">0:00</span>
+      <button id="btn-mute" title="Mute (M)">Sound</button>
       <button id="btn-pause">Pause</button>
+      <button id="btn-settings" title="Settings">⚙</button>
       <button id="btn-help">?</button>
     </div>
   </header>
@@ -67,6 +71,7 @@ app.innerHTML = `
   <div class="tip hidden" id="tip"></div>
   <div class="toasts" id="toasts"></div>
   <div class="paused hidden" id="paused">Paused</div>
+  <div class="edge-flash" id="edge-flash"></div>
   <section id="bv" class="bv hidden"></section>
 
   <section class="overlay" id="setup">
@@ -84,7 +89,7 @@ app.innerHTML = `
         </div>
         <div class="preview-wrap"><canvas id="preview"></canvas></div>
       </div>
-      <div class="actions"><button class="primary" id="start">Start war</button><button id="training">Training: learn the quick-time events</button><button id="setup-help">How to play</button></div>
+      <div class="actions"><button class="primary" id="start">Start war</button><button id="training">Training: learn the quick-time events</button><button id="setup-help">How to play</button><button id="setup-settings">Settings</button></div>
     </div>
   </section>
 
@@ -120,6 +125,17 @@ app.innerHTML = `
         </div>
       </div>
       <div class="actions"><button class="primary" id="help-close">Got it</button></div>
+    </div>
+  </section>
+
+  <section class="overlay hidden" id="settings">
+    <div class="panel settings">
+      <h2>Settings</h2>
+      <div class="set-row"><label for="vol">Volume</label><input id="vol" type="range" min="0" max="1" step="0.05" /><label class="chk"><input id="mute" type="checkbox" /> Mute</label></div>
+      <div class="set-row"><span>Quick-time speed</span><div class="seg" id="qspeed"><button data-v="0.8">Slower (80%)</button><button data-v="1">Normal</button><button data-v="1.2">Faster (120%)</button></div></div>
+      <div class="set-row"><span>Team colours</span><div class="seg" id="palette"><button data-v="classic">Red vs blue</button><button data-v="contrast">High contrast (orange vs blue)</button></div></div>
+      <p class="muted">Slower quick-time events give you more time to react. Their effects stay the same.</p>
+      <div class="actions"><button class="primary" id="settings-close">Done</button></div>
     </div>
   </section>
 
@@ -162,6 +178,46 @@ const bv = new BattleView($('bv'), {
   duelReaction: () => (ai ? duelReaction(ai) : 0.5),
   onPracticeExit: () => $("setup").classList.remove("hidden"),
 });
+
+// ---------- Settings and sound ----------
+
+function applyPrefs() {
+  audioSettings.volume = prefs.volume;
+  audioSettings.muted = prefs.muted;
+  applyVolume();
+  bv.timeScale = prefs.qteSpeed;
+  applyPalette(prefs.palette);
+  $<HTMLInputElement>('vol').value = String(prefs.volume);
+  $<HTMLInputElement>('mute').checked = prefs.muted;
+  $('btn-mute').textContent = prefs.muted ? 'Muted' : 'Sound';
+  document.querySelectorAll<HTMLElement>('#qspeed button').forEach((b) => b.classList.toggle('on', Number(b.dataset.v) === prefs.qteSpeed));
+  document.querySelectorAll<HTMLElement>('#palette button').forEach((b) => b.classList.toggle('on', b.dataset.v === prefs.palette));
+  if (map) drawPreview(map);
+}
+
+function setPref<K extends keyof typeof prefs>(k: K, v: (typeof prefs)[K]) {
+  prefs[k] = v;
+  savePrefs();
+  applyPrefs();
+}
+
+$<HTMLInputElement>('vol').addEventListener('input', (e) => setPref('volume', Number((e.target as HTMLInputElement).value)));
+$<HTMLInputElement>('mute').addEventListener('change', (e) => setPref('muted', (e.target as HTMLInputElement).checked));
+document.querySelectorAll<HTMLElement>('#qspeed button').forEach((b) => b.addEventListener('click', () => setPref('qteSpeed', Number(b.dataset.v))));
+document.querySelectorAll<HTMLElement>('#palette button').forEach((b) => b.addEventListener('click', () => setPref('palette', b.dataset.v as 'classic' | 'contrast')));
+$('settings-close').addEventListener('click', () => $('settings').classList.add('hidden'));
+$('setup-settings').addEventListener('click', () => $('settings').classList.remove('hidden'));
+$('btn-settings').addEventListener('click', () => $('settings').classList.remove('hidden'));
+$('btn-mute').addEventListener('click', () => setPref('muted', !prefs.muted));
+// Browsers only start audio after a user gesture.
+window.addEventListener('pointerdown', () => initAudio(), { capture: true });
+
+function flashEdge() {
+  const el = $('edge-flash');
+  el.classList.remove('on');
+  void el.offsetWidth;
+  el.classList.add('on');
+}
 
 // ---------- Setup ----------
 
@@ -257,6 +313,7 @@ function startGame() {
   $('paused').classList.add('hidden');
   document.querySelector('.hud-top')!.classList.remove('hidden');
   $('dock').classList.remove('hidden');
+  setMusic(true);
 }
 
 function showEnd() {
@@ -264,6 +321,8 @@ function showEnd() {
   bv.hide();
   game.presence[0] = null;
   const won = game.winner === 0;
+  setMusic(false);
+  sfx(won ? 'victory' : 'defeat');
   $('end-title').textContent = won ? 'VICTORY' : 'DEFEAT';
   $('end-title').className = `title ${won ? 'win' : 'loss'}`;
   const t = Math.floor(game.time);
@@ -338,6 +397,7 @@ window.addEventListener('mouseup', () => {
   if (drag.target !== null) {
     const col = sendTroops(game, 0, drag.from, drag.target, drag.amount, stance);
     if (!col) toast('Not enough troops to send', 'nosend');
+    else sfx('send');
   }
   drag = null;
 });
@@ -386,6 +446,7 @@ window.addEventListener('keydown', (e) => {
   if (e.key === 'Escape' && bv.open) return leaveBattle();
   if (e.key === 'p' || e.key === 'P' || (e.key === 'Escape' && !bv.open)) return togglePause();
   if (['1', '2', '3', '4'].includes(e.key)) setRatio([0.25, 0.5, 0.75, 1][Number(e.key) - 1]);
+  if (e.key === 'm' || e.key === 'M') setPref('muted', !prefs.muted);
 });
 
 function togglePause() {
@@ -453,6 +514,7 @@ function updateHud(g: Game) {
       return { b, me, foe, r: me / (me + foe || 1) };
     })
     .sort((p, q) => p.r - q.r);
+  setIntensity(mine.length);
   $('battle-list').innerHTML = mine
     .map(
       ({ b, me, foe, r }) =>
@@ -464,9 +526,19 @@ function updateHud(g: Game) {
     const key = `${e.kind}:${e.t.toFixed(2)}:${e.text}`;
     if (seenEvents.has(key)) continue;
     seenEvents.add(key);
-    if (e.kind === 'battle' && e.owner === 1) toast(`⚔ ${e.text}`, key);
-    else if (e.kind === 'lost') toast(e.text, key);
-    else if (e.kind === 'captured' && e.owner === 0) toast(e.text, key, true);
+    if (e.kind === 'battle' && e.owner === 1) {
+      toast(`⚔ ${e.text}`, key);
+      // A horn when the enemy hits one of your strongholds.
+      const b = getBattle(g, e.battleId ?? null);
+      if (b && b.nodeId !== null && g.nodes[b.nodeId].owner === 0) sfx('horn');
+    } else if (e.kind === 'lost') {
+      toast(e.text, key);
+      sfx('lost');
+      flashEdge();
+    } else if (e.kind === 'captured' && e.owner === 0) {
+      toast(e.text, key, true);
+      sfx('captured');
+    }
     else if (e.kind === 'intercept') toast('⚔ Columns clash on a road', key);
   }
 }
@@ -516,6 +588,7 @@ function tick(dt: number) {
 }
 
 buildSetup();
+applyPrefs();
 onResize();
 requestAnimationFrame(frame);
 
@@ -525,6 +598,7 @@ requestAnimationFrame(frame);
     return game;
   },
   bv,
+  audioState,
   renderer,
   settings,
   enterBattle,

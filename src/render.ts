@@ -6,6 +6,27 @@ export const OWNER_COLOR: Record<Owner, string> = { 0: '#e2364d', 1: '#4aa3d8', 
 export const OWNER_LIGHT: Record<Owner, string> = { 0: '#ff8a98', 1: '#a8dcff', 2: '#d8ccb0' };
 export const OWNER_DARK: Record<Owner, string> = { 0: '#3d0d16', 1: '#0f2a3d', 2: '#2b261c' };
 
+const PALETTES = {
+  classic: { c: ['#e2364d', '#4aa3d8'], l: ['#ff8a98', '#a8dcff'], d: ['#3d0d16', '#0f2a3d'] },
+  // Orange vs. strong blue: distinct for the common forms of colour blindness.
+  contrast: { c: ['#ff9f1c', '#3a6dff'], l: ['#ffd29a', '#a9c1ff'], d: ['#3d2405', '#0b1844'] },
+};
+
+/** Switch team colours everywhere (canvas and CSS). */
+export function applyPalette(name: keyof typeof PALETTES) {
+  const p = PALETTES[name];
+  for (const i of [0, 1] as const) {
+    OWNER_COLOR[i] = p.c[i];
+    OWNER_LIGHT[i] = p.l[i];
+    OWNER_DARK[i] = p.d[i];
+  }
+  const root = document.documentElement.style;
+  root.setProperty('--p0', p.c[0]);
+  root.setProperty('--p0-light', p.l[0]);
+  root.setProperty('--p1', p.c[1]);
+  root.setProperty('--p1-light', p.l[1]);
+}
+
 export function nodeRadius(n: MapNode) {
   return n.kind === 'capital' ? 44 : n.kind === 'fort' ? 38 : 33;
 }
@@ -60,12 +81,16 @@ export class MapRenderer {
   width = 0;
   height = 0;
   private dpr = 1;
+  /** Dust kicked up by marching columns. */
+  private dust: { x: number; y: number; t: number; owner: Owner }[] = [];
+  private lastNow = 0;
 
   constructor(readonly canvas: HTMLCanvasElement) {
     this.ctx = canvas.getContext('2d')!;
   }
 
   setMap(m: GraphMap) {
+    this.dust = [];
     this.bg = paintBackground(m);
   }
 
@@ -173,6 +198,27 @@ export class MapRenderer {
       this.pill(`${ui.drag.amount}`, (a.x + end.x) / 2, (a.y + end.y) / 2 - 16, 0);
     }
 
+    // Dust trails behind marching columns.
+    const dt = Math.min(0.1, Math.max(0, ui.now - this.lastNow));
+    this.lastNow = ui.now;
+    for (const d of this.dust) d.t += dt;
+    this.dust = this.dust.filter((d) => d.t < 1.1);
+    for (const c of g.columns) {
+      if (Math.random() < dt * 14) {
+        const p = columnPos(g, c);
+        const a = m.nodes[c.from];
+        const b = m.nodes[c.path[0]];
+        const ang = Math.atan2(b.y - a.y, b.x - a.x);
+        this.dust.push({ x: p.x - Math.cos(ang) * 22 + (Math.random() - 0.5) * 10, y: p.y - Math.sin(ang) * 22 + (Math.random() - 0.5) * 10, t: 0, owner: c.owner });
+      }
+    }
+    for (const d of this.dust) {
+      ctx.fillStyle = `rgba(190,170,140,${0.22 * (1 - d.t / 1.1)})`;
+      ctx.beginPath();
+      ctx.arc(d.x, d.y, 5 + d.t * 14, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
     // Columns on the march.
     for (const c of g.columns) {
       const p = columnPos(g, c);
@@ -201,6 +247,30 @@ export class MapRenderer {
 
     // Battles.
     for (const b of activeBattles(g)) this.drawBattle(g, b, ui);
+
+    // A stronghold changing hands: a burst ring and a flag raised on the spot.
+    for (const e of g.events) {
+      if (e.kind !== 'captured' && e.kind !== 'lost') continue;
+      const age = g.time - e.t;
+      if (age > 1.4) continue;
+      const col = OWNER_COLOR[e.owner];
+      ctx.strokeStyle = col;
+      ctx.globalAlpha = 1 - age / 1.4;
+      ctx.lineWidth = 6;
+      ctx.beginPath();
+      ctx.arc(e.x, e.y, 40 + age * 90, 0, Math.PI * 2);
+      ctx.stroke();
+      const rise = Math.min(1, age / 0.5);
+      ctx.strokeStyle = '#eee';
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.moveTo(e.x + 34, e.y - 20);
+      ctx.lineTo(e.x + 34, e.y - 20 - 50 * rise);
+      ctx.stroke();
+      ctx.fillStyle = col;
+      ctx.fillRect(e.x + 34, e.y - 20 - 50 * rise, 30, 18);
+      ctx.globalAlpha = 1;
+    }
 
     // Event floaters.
     for (const e of g.events) {
