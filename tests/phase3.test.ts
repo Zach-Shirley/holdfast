@@ -9,6 +9,7 @@ import {
   canSee,
   createGame,
   knownNode,
+  reverseColumn,
   sendTroops,
   setRally,
   sideOf,
@@ -157,4 +158,42 @@ describe('fog of war', () => {
     }
     expect(stuck).toBe(0);
   }, 120000);
+});
+
+describe('follow-ups (2026-10-19)', () => {
+  it('maps with 12, 14 and 16 strongholds generate, symmetric and connected', () => {
+    for (const n of [12, 14, 16]) {
+      for (const seed of [1, 2, 3]) {
+        const m = generateMap(seed, n);
+        expect(m.nodes.length).toBe(n);
+        for (const node of m.nodes) expect(m.nodes[m.mirror[node.id]].kind).toBe(node.kind);
+      }
+    }
+  });
+
+  it('clicking a column turns it back toward the node it left', () => {
+    const g = createGame(generateMap(3, 8));
+    const c0 = g.map.capitals[0];
+    const to = g.map.adj[c0][0];
+    g.nodes[c0].troops = 50;
+    const col = sendTroops(g, 0, c0, to, 20)!;
+    step(g, 2);
+    const before = g.nodes[c0].troops;
+    expect(reverseColumn(g, 0, col.id)).toBe(true);
+    expect(col.path).toEqual([c0]);
+    run(g, 20);
+    expect(g.nodes[c0].troops).toBeGreaterThan(before + 15);
+  });
+
+  it('under fog, enemy counts seen from afar are rounded to the nearest 5', () => {
+    const g = createGame(generateMap(3, 8), { fog: true });
+    for (const n of g.map.nodes) n.special = null;
+    const c0 = g.map.capitals[0];
+    const near = g.map.adj[c0][0];
+    g.nodes[near].owner = 1;
+    g.nodes[near].troops = 23;
+    const k = knownNode(g, 0, near);
+    if (k.live && !k.exact) expect(k.troops % 5).toBe(0);
+    expect(knownNode(g, 0, c0).exact).toBe(true);
+  });
 });

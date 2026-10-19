@@ -14,6 +14,7 @@ import {
   canSee,
   columnPos,
   knownNode,
+  reverseColumn,
   setRally,
   useAbility,
   type Ability,
@@ -119,7 +120,7 @@ app.innerHTML = `
       <div class="setup-grid">
         <div>
           <h3>Strongholds</h3>
-          <div class="seg" data-key="nodes">${[6, 7, 8, 9, 10].map((n) => `<button data-v="${n}">${n}</button>`).join('')}</div>
+          <div class="seg" data-key="nodes">${[6, 7, 8, 9, 10, 12, 14, 16].map((n) => `<button data-v="${n}">${n}</button>`).join('')}</div>
           <h3 class="gap">Enemy</h3>
           <div class="seg" data-key="difficulty"><button data-v="easy">Easy</button><button data-v="normal">Normal</button><button data-v="hard">Hard</button></div>
           <h3 class="gap">Rival</h3>
@@ -165,8 +166,9 @@ app.innerHTML = `
           <p>Roads: green dashed <b>marsh</b> is slow (×0.65), pale <b>paved</b> roads are fast (×1.3).</p>
           <p><b>Rally routes:</b> right-drag from one of your strongholds to another to forward new troops there automatically. Right-click it to clear.</p>
           <p><b>Multi-send:</b> drag a box around several strongholds, then drag from any of them to send from all.</p>
+          <p><b>Turn back:</b> click one of your marching columns to send it back where it came from.</p>
           <p><b>Orders</b> (dock): Forced March (click a column: 2× speed for 15 s), Inspire (click a battle: +momentum and rally), Spy (20 s: see everything and where enemy columns are heading).</p>
-          <p><b>Fog of war</b> (optional): you only see near your strongholds and columns. Elsewhere you see the last sighting, marked "?".</p>
+          <p><b>Fog of war</b> (optional): you only see near your strongholds and columns. Enemy counts seen from afar are rough ("~25"). Elsewhere you see the last sighting, marked "?". Watchtowers only appear in fog matches.</p>
         </div>
         <div>
           <h3>Quick-time events (mouse only)</h3>
@@ -522,6 +524,18 @@ canvas.addEventListener('mousedown', (e) => {
     enterBattle(bid);
     return;
   }
+  // Clicking one of your marching columns turns it around (if the click is nearer the column than any stronghold).
+  const w = renderer.s2w(x, y);
+  const col = game.columns
+    .filter((c) => c.owner === 0)
+    .map((c) => ({ c, d: Math.hypot(columnPos(game!, c).x - w.x, columnPos(game!, c).y - w.y) }))
+    .sort((p, q) => p.d - q.d)[0];
+  const nodeDist = n !== null ? Math.hypot(game.map.nodes[n].x - w.x, game.map.nodes[n].y - w.y) : Infinity;
+  if (col && col.d < 34 && col.d < nodeDist && reverseColumn(game, 0, col.c.id)) {
+    sfx('retreat');
+    toast(`Column turned back toward ${game.map.nodes[col.c.path[0]].name}`, 'reverse');
+    return;
+  }
   if (n === null) {
     box = { x0: x, y0: y, x1: x, y1: y };
     return;
@@ -610,9 +624,10 @@ function updateTip(sx: number, sy: number) {
   const ns = game.nodes[hover];
   const known = knownNode(game, 0, hover);
   const owner = known.owner === 0 ? 'Yours' : known.owner === 1 ? 'Enemy' : 'Neutral';
-  const troops = known.live ? `${Math.floor(ns.troops)} troops` : `about ${Math.floor(known.troops)} troops when last seen`;
+  const troops = !known.live ? `about ${Math.floor(known.troops)} troops when last seen` : known.exact ? `${Math.floor(ns.troops)} troops` : `roughly ${known.troops} troops (too far to count exactly)`;
   const growth = st.growth * (n.special === 'barracks' ? 1.5 : 1);
-  const special = n.special ? `<br><b class="sp">${SPECIALS[n.special].label}:</b> ${SPECIALS[n.special].desc}` : '';
+  // Watchtowers only matter under fog of war, so they stay hidden otherwise.
+  const special = n.special && (n.special !== 'watchtower' || game.fog) ? `<br><b class="sp">${SPECIALS[n.special].label}:</b> ${SPECIALS[n.special].desc}` : '';
   const roads = game.map.adj[hover].map((k) => game!.map.edges.find((e) => (e.a === hover && e.b === k) || (e.b === hover && e.a === k))!.road).filter((r) => r !== 'road');
   const roadNote = roads.length ? `<br>Roads here: ${[...new Set(roads)].map((r) => `${r} (×${ROAD_SPEED[r]} speed)`).join(', ')}` : '';
   const rally = ns.owner === 0 && ns.rallyTo !== null ? `<br>Rally route → ${game.map.nodes[ns.rallyTo].name} (right-click to clear)` : '';

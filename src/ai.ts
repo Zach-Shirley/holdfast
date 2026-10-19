@@ -218,7 +218,8 @@ function specialValue(g: Game, node: number): number {
   const sp = g.map.nodes[node].special;
   if (sp === 'barracks') return 1.5;
   if (sp === 'forge' || sp === 'shrine') return 1;
-  if (sp === 'watchtower') return g.fog ? 1.4 : 0.6;
+  // A Watchtower only matters under fog of war.
+  if (sp === 'watchtower') return g.fog ? 1.4 : 0;
   return 0;
 }
 const QTE_KINDS: QteKind[] = ['volley', 'parry', 'slash', 'banner'];

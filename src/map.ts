@@ -109,6 +109,9 @@ export function hops(m: GraphMap, from: number, to: number): number {
 
 function tryBuild(seed: number, count: number): GraphMap | null {
   const rng = mulberry32(seed);
+  // Bigger maps pack strongholds a little closer and use more of each half.
+  const gap = count <= 10 ? MIN_NODE_GAP : count <= 12 ? 175 : count <= 14 ? 160 : 148;
+  const xMin = count <= 10 ? 320 : 270;
   const W = WORLD_W;
   const H = WORLD_H;
   const mirrorPt = (p: { x: number; y: number }) => ({ x: W - p.x, y: H - p.y });
@@ -139,11 +142,11 @@ function tryBuild(seed: number, count: number): GraphMap | null {
   for (const kind of kinds) {
     let placed = false;
     for (let attempt = 0; attempt < 400 && !placed; attempt++) {
-      const x = 320 + rng() * 460;
-      const y = 100 + rng() * (H - 200);
+      const x = xMin + rng() * (780 - xMin);
+      const y = (count <= 10 ? 100 : 80) + rng() * (H - (count <= 10 ? 200 : 160));
       const m = mirrorPt({ x, y });
-      if (Math.hypot(x - m.x, y - m.y) < MIN_NODE_GAP) continue;
-      if (nodes.some((n) => Math.hypot(n.x - x, n.y - y) < MIN_NODE_GAP || Math.hypot(n.x - m.x, n.y - m.y) < MIN_NODE_GAP)) continue;
+      if (Math.hypot(x - m.x, y - m.y) < gap) continue;
+      if (nodes.some((n) => Math.hypot(n.x - x, n.y - y) < gap || Math.hypot(n.x - m.x, n.y - m.y) < gap)) continue;
       pair(x, y, kind);
       placed = true;
     }
@@ -242,7 +245,7 @@ function decorate(m: GraphMap) {
 }
 
 export function generateMap(seed: number, count: number): GraphMap {
-  const n = Math.max(6, Math.min(10, Math.round(count)));
+  const n = Math.max(6, Math.min(16, Math.round(count)));
   for (let attempt = 0; attempt < 200; attempt++) {
     const m = tryBuild(seed * 7 + attempt * 104729, n);
     if (m) {

@@ -82,6 +82,11 @@ npm run build
   - **Pursuit is more common.** It now appears once any enemy side is below half its peak strength (40% of event picks), and against a rout (60%). Each caught runner kills 3.5% of the enemy, or 5% against a rout, times quick-time power. The AI commander gets Pursuits under the same rule, so it stays fair.
   - **The Archer's Volley ring is eased** instead of slowed: it starts faster, slows as it nears the target, and holds for 0.14 s at the perfect moment; the total time is unchanged. This only helps a human's timing. A timing-error model suggests about +5 to +20 points of Volley hit rate (roughly +1 to +5 points of overall quick-time success), on the commander that was already weakest in AI tests, so it was kept. That is modelled, not playtested.
   - **Watch AI vs AI** (start screen): choose the left AI (or Random) against the Rival. Fog is off while watching. Speed is 1×, 2× or 4×. Click any battle to watch inside it, where each commander's quick-time results float over their own army. The end screen names the winner.
+- **Tweaks after more playtesting (2026-10-19):**
+  - **Fights last 20% longer** (base losses 0.6 → 0.5, per-troop 0.045 → 0.0375). In the 20-war sweep, charges used rose from 48 to 95, and the median war went from about 3¼ to 4½ minutes.
+  - **Map sizes 12, 14 and 16** are added (strongholds pack slightly closer on big maps).
+  - **Turn a column around:** click one of your marching columns and it heads back to the node it left. A click counts for the column if it is nearer the column than the stronghold.
+  - **Fog of war hides more:** vision drops to 260 around strongholds and 190 around columns. Enemy counts you can see but are not within 150 of show rounded to the nearest 5 ("~25"), and the AI gets the same rough numbers. **Watchtowers** only show, and only count for the AI, in fog matches.
 - **Training** (start screen): pick any of the six events (including Duel and Pursuit), read the steps, **watch a demo** where a ghost cursor performs it, then **practise** it on repeat with hits, misses and a streak counter.
 - **Enemy commander:** the AI plays the same quick-time events, one battle at a time, with a switching delay and a success rate set by difficulty (easy 55%, normal 70%, hard 82%). It deliberately attacks where your commander is not.
 - **Winning:** take the enemy capital. A 12-minute war clock breaks deadlocks: at zero, whoever holds more strongholds wins, with total troops as the tiebreak.
@@ -103,7 +108,7 @@ Every player action is a plain function on the simulation: `sendTroops` (with st
 
 ## Verification (2026-10-18)
 
-- `npm test`: 40 passing (Phase 4 added `tests/phase4.test.ts`: each commander effect, every personality finishing against every other, and the Aggressor starting more attacks than the Turtle. Phase 3 added `tests/phase3.test.ts`: symmetric specials and roads, barracks/forge/shrine effects, road and Forced March speeds, rally routes, ability cooldowns, fog visibility and memory, and AI wars finishing with fog on). Phase 1 added tests for rally/finisher, retreat (attacker and defender), stances, rout and duel/pursuit, plus checks that both AIs use finishers and retreats in the 20-map sweep. Covers:
+- `npm test`: 43 passing (Phase 4 added `tests/phase4.test.ts`: each commander effect, every personality finishing against every other, and the Aggressor starting more attacks than the Turtle. Phase 3 added `tests/phase3.test.ts`: symmetric specials and roads, barracks/forge/shrine effects, road and Forced March speeds, rally routes, ability cooldowns, fog visibility and memory, and AI wars finishing with fog on). Phase 1 added tests for rally/finisher, retreat (attacker and defender), stances, rout and duel/pursuit, plus checks that both AIs use finishers and retreats in the 20-map sweep. Covers:
   - map generation for every size (connected, symmetric, capitals at least 3 roads apart) and determinism
   - garrison growth and caps, capture, battle length, wall bonus and road interception
   - quick-time successes flipping a losing fight

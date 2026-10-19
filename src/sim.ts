@@ -8,8 +8,9 @@ export type Player = 0 | 1;
 /** World pixels per second a column marches. */
 export const COLUMN_SPEED = 55;
 /** Battle losses per second for each side: (BASE + PER_TROOP * enemy troops) * enemy momentum * enemy defence. */
-export const BASE_LOSS = 0.6;
-export const PER_TROOP_LOSS = 0.045;
+/** Fights were lengthened by 20% after playtesting (2026-10-19), so these are the old values / 1.2. */
+export const BASE_LOSS = 0.5;
+export const PER_TROOP_LOSS = 0.0375;
 export const MOMENTUM_MIN = 0.5;
 export const MOMENTUM_MAX = 4;
 /** Multiplier on every quick-time success (2.5x after playtest feedback, 2026-10-19). */
@@ -41,10 +42,12 @@ export const ROUT_AT = 0.25;
 export const ROUT_DAMAGE = 1.25;
 
 /** Vision ranges (world units) when fog of war is on. */
-export const VISION_NODE = 300;
+export const VISION_NODE = 260;
 export const VISION_TOWER = 580;
-export const VISION_COLUMN = 220;
+export const VISION_COLUMN = 190;
 export const VISION_BATTLE = 200;
+/** Under fog, exact enemy counts are only visible this close; farther away you get a rough estimate. */
+export const CLOSE_SIGHT = 150;
 /** Barracks growth multiplier, Forge starting momentum, Shrine quick-time multiplier. */
 export const BARRACKS_GROWTH = 1.5;
 export const FORGE_MOMENTUM = 0.3;
@@ -260,12 +263,41 @@ export function canSee(g: Game, viewer: Player, x: number, y: number): boolean {
   return false;
 }
 
-/** What `viewer` knows about a node: live if visible, otherwise their last sighting. */
-export function knownNode(g: Game, viewer: Player, id: number): { owner: Owner; troops: number; live: boolean } {
+/** Under fog, is this point close enough to one of `viewer`'s strongholds, columns or battles to count heads exactly? */
+export function closeTo(g: Game, viewer: Player, x: number, y: number): boolean {
+  if (!g.fog || g.spyUntil[viewer] > g.time) return true;
+  for (const n of g.nodes) if (n.owner === viewer && Math.hypot(g.map.nodes[n.id].x - x, g.map.nodes[n.id].y - y) <= CLOSE_SIGHT) return true;
+  for (const c of g.columns) if (c.owner === viewer && Math.hypot(columnPos(g, c).x - x, columnPos(g, c).y - y) <= CLOSE_SIGHT) return true;
+  return false;
+}
+
+/** A rough head count, to the nearest 5. */
+export const roughly = (n: number) => Math.max(0, Math.round(n / 5) * 5);
+
+/**
+ * What `viewer` knows about a node: live if visible (exact up close, rounded to the nearest 5
+ * farther out), otherwise their last sighting.
+ */
+export function knownNode(g: Game, viewer: Player, id: number): { owner: Owner; troops: number; live: boolean; exact: boolean } {
   const mn = g.map.nodes[id];
-  if (canSee(g, viewer, mn.x, mn.y)) return { owner: g.nodes[id].owner, troops: g.nodes[id].troops, live: true };
+  const n = g.nodes[id];
+  if (canSee(g, viewer, mn.x, mn.y)) {
+    const exact = n.owner === viewer || closeTo(g, viewer, mn.x, mn.y);
+    return { owner: n.owner, troops: exact ? n.troops : roughly(n.troops), live: true, exact };
+  }
   const m = g.memory[viewer][id];
-  return { owner: m.owner, troops: m.troops, live: false };
+  return { owner: m.owner, troops: m.troops, live: false, exact: false };
+}
+
+/** Turn one of your marching columns around: it heads back to the node it just left. */
+export function reverseColumn(g: Game, owner: Player, columnId: number): boolean {
+  const c = g.columns.find((x) => x.id === columnId && x.owner === owner);
+  if (!c || c.battleId !== null) return false;
+  const back = c.from;
+  c.from = c.path[0];
+  c.path = [back];
+  c.progress = Math.max(0, c.edgeLen - c.progress);
+  return true;
 }
 
 /** Set (or clear, with `to` null) a rally route from one of your strongholds to another. */
@@ -744,7 +776,7 @@ export function step(g: Game, dt: number) {
     for (const p of [0, 1] as Player[]) {
       for (const n of g.nodes) {
         const mn = m.nodes[n.id];
-        if (canSee(g, p, mn.x, mn.y)) g.memory[p][n.id] = { owner: n.owner, troops: n.troops, t: g.time };
+        if (canSee(g, p, mn.x, mn.y)) g.memory[p][n.id] = { owner: n.owner, troops: n.owner === p || closeTo(g, p, mn.x, mn.y) ? n.troops : roughly(n.troops), t: g.time };
       }
     }
   }

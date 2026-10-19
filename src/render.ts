@@ -1,6 +1,6 @@
 import { NODE_STATS, SPECIALS, WORLD_H, WORLD_W, type GraphMap, type MapNode } from './map';
 import { fbm, makeNoise, mulberry32 } from './rng';
-import { VISION_BATTLE, VISION_COLUMN, VISION_NODE, VISION_TOWER, activeBattles, canSee, columnPos, inDuel, knownNode, sideOf, type Battle, type Game, type Owner } from './sim';
+import { VISION_BATTLE, VISION_COLUMN, VISION_NODE, VISION_TOWER, activeBattles, canSee, closeTo, columnPos, roughly, inDuel, knownNode, sideOf, type Battle, type Game, type Owner } from './sim';
 
 export const OWNER_COLOR: Record<Owner, string> = { 0: '#e2364d', 1: '#4aa3d8', 2: '#a89a7c' };
 export const OWNER_LIGHT: Record<Owner, string> = { 0: '#ff8a98', 1: '#a8dcff', 2: '#d8ccb0' };
@@ -314,7 +314,9 @@ export class MapRenderer {
       }
       // Stance glyph: ▲ assault, ■ hold, » skirmish.
       const glyph = c.stance === 'assault' ? '▲' : c.stance === 'hold' ? '■' : '»';
-      this.pill(`${glyph} ${Math.floor(c.troops)}`, p.x, p.y - 22, c.owner);
+      // Under fog, enemy columns seen from afar only show a rough count.
+      const count = c.owner === 0 || closeTo(g, 0, p.x, p.y) ? String(Math.floor(c.troops)) : `~${roughly(c.troops)}`;
+      this.pill(`${glyph} ${count}`, p.x, p.y - 22, c.owner);
     }
 
     // Nodes.
@@ -521,7 +523,7 @@ export class MapRenderer {
     ctx.font = `700 ${n.kind === 'capital' ? 32 : 28}px "Chakra Petch", sans-serif`;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
-    const label = !known.live ? `${Math.floor(known.troops)}?` : st.battleId !== null ? '⚔' : String(Math.floor(st.troops));
+    const label = !known.live ? `${Math.floor(known.troops)}?` : st.battleId !== null ? '⚔' : known.exact ? String(Math.floor(st.troops)) : `~${known.troops}`;
     ctx.fillText(label, n.x, n.y + 6);
     ctx.textBaseline = 'alphabetic';
     // Name.
@@ -530,7 +532,8 @@ export class MapRenderer {
     ctx.fillText(n.name.toUpperCase(), n.x, n.y + r + 30);
     ctx.globalAlpha = 1;
     // Special stronghold badge.
-    if (n.special) {
+    // Watchtowers only matter under fog of war, so their badge only shows there.
+    if (n.special && (n.special !== 'watchtower' || g.fog)) {
       const bx = n.x + r * 0.78;
       const by = n.y + r * 0.62;
       ctx.fillStyle = '#1a1408';
