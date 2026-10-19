@@ -2,18 +2,33 @@ import { mulberry32, type Rng } from './rng';
 
 export type NodeKind = 'capital' | 'fort' | 'village';
 
+/** Special strongholds give their holder an extra power. */
+export type Special = 'barracks' | 'watchtower' | 'forge' | 'shrine';
+export const SPECIALS: Record<Special, { label: string; desc: string; glyph: string }> = {
+  barracks: { label: 'Barracks', desc: '+50% troop growth.', glyph: 'B' },
+  watchtower: { label: 'Watchtower', desc: 'Sees much farther (matters with fog of war).', glyph: 'W' },
+  forge: { label: 'Forge', desc: 'Your battles here and next door start with +0.3 momentum.', glyph: 'F' },
+  shrine: { label: 'Shrine', desc: 'Your quick-time events are 25% stronger in battles here and next door.', glyph: 'S' },
+};
+
+export type RoadKind = 'road' | 'marsh' | 'paved';
+/** Column speed multiplier per road type. */
+export const ROAD_SPEED: Record<RoadKind, number> = { road: 1, marsh: 0.65, paved: 1.3 };
+
 export interface MapNode {
   id: number;
   x: number;
   y: number;
   kind: NodeKind;
   name: string;
+  special: Special | null;
 }
 
 export interface Edge {
   a: number;
   b: number;
   len: number;
+  road: RoadKind;
 }
 
 export interface GraphMap {
@@ -100,7 +115,7 @@ function tryBuild(seed: number, count: number): GraphMap | null {
   const nodes: MapNode[] = [];
   const mirror: number[] = [];
   const add = (x: number, y: number, kind: NodeKind) => {
-    nodes.push({ id: nodes.length, x, y, kind, name: '' });
+    nodes.push({ id: nodes.length, x, y, kind, name: '', special: null });
     return nodes.length - 1;
   };
   const pair = (x: number, y: number, kind: NodeKind) => {
@@ -143,7 +158,7 @@ function tryBuild(seed: number, count: number): GraphMap | null {
   const cands: Edge[] = [];
   for (let i = 0; i < nodes.length; i++) {
     for (let j = i + 1; j < nodes.length; j++) {
-      cands.push({ a: i, b: j, len: Math.hypot(nodes[i].x - nodes[j].x, nodes[i].y - nodes[j].y) });
+      cands.push({ a: i, b: j, len: Math.hypot(nodes[i].x - nodes[j].x, nodes[i].y - nodes[j].y), road: 'road' });
     }
   }
   cands.sort((p, q) => p.len - q.len);
@@ -160,7 +175,7 @@ function tryBuild(seed: number, count: number): GraphMap | null {
   };
   for (const e of cands) {
     if (has(e.a, e.b)) continue;
-    const me: Edge = { a: mirror[e.a], b: mirror[e.b], len: e.len };
+    const me: Edge = { a: mirror[e.a], b: mirror[e.b], len: e.len, road: 'road' };
     const same = (me.a === e.a && me.b === e.b) || (me.a === e.b && me.b === e.a);
     if (!ok(e, edges)) continue;
     if (!same && (!ok(me, edges) || segmentsCross(nodes[e.a], nodes[e.b], nodes[me.a], nodes[me.b]))) continue;
@@ -188,12 +203,51 @@ function tryBuild(seed: number, count: number): GraphMap | null {
   return m;
 }
 
+/** Give the map its special strongholds and road types, always identically on both halves. */
+function decorate(m: GraphMap) {
+  const rng = mulberry32(m.seed ^ 0x5bec1a1);
+  const pairs = m.nodes.filter((n) => n.kind !== 'capital' && m.mirror[n.id] > n.id);
+  const centre = m.nodes.find((n) => m.mirror[n.id] === n.id);
+  const kinds: Special[] = ['barracks', 'watchtower', 'forge', 'shrine'];
+  for (let i = kinds.length - 1; i > 0; i--) {
+    const j = Math.floor(rng() * (i + 1));
+    [kinds[i], kinds[j]] = [kinds[j], kinds[i]];
+  }
+  // Roughly two thirds of the pairs get a special, at least two kinds per map when possible.
+  const count = Math.max(Math.min(2, pairs.length), Math.round(pairs.length * 0.66));
+  // Fisher-Yates, not a random sort comparator: identical in every browser (online play needs that).
+  const order = [...pairs];
+  for (let i = order.length - 1; i > 0; i--) {
+    const j = Math.floor(rng() * (i + 1));
+    [order[i], order[j]] = [order[j], order[i]];
+  }
+  order.slice(0, count).forEach((n, i) => {
+    const k = kinds[i % kinds.length];
+    n.special = k;
+    m.nodes[m.mirror[n.id]].special = k;
+  });
+  if (centre) centre.special = rng() < 0.5 ? 'shrine' : 'forge';
+  // Some roads are marshes (slow) or paved (fast).
+  const done = new Set<Edge>();
+  for (const e of m.edges) {
+    if (done.has(e)) continue;
+    const twin = edgeBetween(m, m.mirror[e.a], m.mirror[e.b])!;
+    const r = rng();
+    const road: RoadKind = r < 0.22 ? 'marsh' : r < 0.4 ? 'paved' : 'road';
+    e.road = road;
+    twin.road = road;
+    done.add(e);
+    done.add(twin);
+  }
+}
+
 export function generateMap(seed: number, count: number): GraphMap {
   const n = Math.max(6, Math.min(10, Math.round(count)));
   for (let attempt = 0; attempt < 200; attempt++) {
     const m = tryBuild(seed * 7 + attempt * 104729, n);
     if (m) {
       m.seed = seed;
+      decorate(m);
       return m;
     }
   }

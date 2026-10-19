@@ -1,6 +1,6 @@
 # Holdfast: Depth and Engagement Plan
 
-Written 2026-10-19 after Zach's playtest of v0.3 ("I prefer this much more… overall it's balanced"). Status: Phases 1 and 2 built 2026-10-19 (see README); later phases are proposals. Zach's answers: online 1v1 is an eventual goal (keep every action a simulation command), synthesized sound effects are fine, and a campaign is possible later.
+Written 2026-10-19 after Zach's playtest of v0.3 ("I prefer this much more… overall it's balanced"). Status: Phases 1–3 built 2026-10-19 (see README); later phases are proposals. Zach's answers: online 1v1 is an eventual goal (keep every action a simulation command), synthesized sound effects are fine, and a campaign is possible later.
 
 ## Where the game is now
 
@@ -57,7 +57,7 @@ Verification: unit tests for each mechanic; extend the AI-vs-AI sweep; a "comman
 - **Map juice:** columns leave dust trails, a captured node does a flag-raise animation, and losing a node flashes the screen edge.
 - **Settings:** QTE speed (80/100/120%), sound volume and a colorblind-safe palette.
 
-## Phase 3: A map worth fighting over
+## Phase 3: A map worth fighting over (BUILT 2026-10-19)
 
 *About 2–3 days. Confidence: medium-high (needs AI updates and balance passes).*
 

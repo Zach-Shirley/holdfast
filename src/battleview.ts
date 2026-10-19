@@ -1,7 +1,7 @@
 import { NODE_STATS } from './map';
 import { OWNER_COLOR, OWNER_DARK, OWNER_LIGHT } from './render';
 import { setBattleAmbience, sfx, spearWhoosh, volleyTone, type Voice } from './sound';
-import { STANCES, activeBattles, battleName, getBattle, inDuel, isRouting, sideDefense, sideOf, type Battle, type Game, type Owner, type QteKind } from './sim';
+import { STANCES, activeBattles, battleName, battleNodes, canSee, getBattle, inDuel, isRouting, sideDefense, sideOf, specialNear, type Battle, type Game, type Owner, type QteKind } from './sim';
 
 /** Everything the battle view can throw at you: the four basics plus situational events. */
 export type ViewKind = QteKind | 'duel' | 'pursuit';
@@ -1187,7 +1187,7 @@ export class BattleView {
     e.lc.textContent = String(Math.ceil(left.troops));
     e.rc.textContent = String(Math.ceil(right.troops));
     const me = sideOf(b, 0);
-    const tag = (s: typeof me) => (s?.stance ? ` · ${STANCES[s.stance].label}` : '') + (s && sideDefense(g, b, s) > 1 ? ` · walls ×${sideDefense(g, b, s)}` : '') + (s && isRouting(b, s) ? ' · ROUTING' : '');
+    const tag = (s: typeof me) => (s?.stance ? ` · ${STANCES[s.stance].label}` : '') + (s && sideDefense(g, b, s) > 1 ? ` · walls ×${sideDefense(g, b, s)}` : '') + (s && isRouting(b, s) ? ' · ROUTING' : '') + (s && specialNear(g, s.owner, battleNodes(b), 'shrine') ? ' · Shrine +25%' : '');
     e.lm.textContent = `You${tag(me)}`;
     const foe = b.sides.find((s) => s.owner === right.owner);
     e.rm.textContent = `${right.owner === 2 ? 'Neutral' : 'Enemy'}${tag(foe)}`;
@@ -1222,7 +1222,7 @@ export class BattleView {
           })
           .join('')
       : '<p class="none">None right now</p>';
-    const recent = g.events.filter((ev) => ev.kind !== 'qte' && g.time - ev.t < 6).slice(-3).reverse();
+    const recent = g.events.filter((ev) => ev.kind !== 'qte' && g.time - ev.t < 6 && canSee(g, 0, ev.x, ev.y)).slice(-3).reverse();
     e.ticker.innerHTML = recent.map((ev) => `<div class="${ev.kind === 'lost' ? 'bad' : ''}">${ev.text}</div>`).join('');
   }
 }

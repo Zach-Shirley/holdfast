@@ -1,6 +1,6 @@
-import { NODE_STATS, WORLD_H, WORLD_W, type GraphMap, type MapNode } from './map';
+import { NODE_STATS, SPECIALS, WORLD_H, WORLD_W, type GraphMap, type MapNode } from './map';
 import { fbm, makeNoise, mulberry32 } from './rng';
-import { activeBattles, columnPos, inDuel, sideOf, type Battle, type Game, type Owner } from './sim';
+import { VISION_BATTLE, VISION_COLUMN, VISION_NODE, VISION_TOWER, activeBattles, canSee, columnPos, inDuel, knownNode, sideOf, type Battle, type Game, type Owner } from './sim';
 
 export const OWNER_COLOR: Record<Owner, string> = { 0: '#e2364d', 1: '#4aa3d8', 2: '#a89a7c' };
 export const OWNER_LIGHT: Record<Owner, string> = { 0: '#ff8a98', 1: '#a8dcff', 2: '#d8ccb0' };
@@ -70,6 +70,14 @@ export interface MapUi {
   hover: number | null;
   drag: { from: number; x: number; y: number; target: number | null; amount: number } | null;
   now: number;
+  /** Strongholds picked with the selection box (multi-send). */
+  selected: Set<number>;
+  /** Selection box in screen pixels. */
+  box: { x0: number; y0: number; x1: number; y1: number } | null;
+  /** Right-drag preview for a rally route. */
+  rallyDrag: { from: number; x: number; y: number; target: number | null } | null;
+  /** Ability waiting for a target click. */
+  targeting: 'march' | 'inspire' | null;
 }
 
 export class MapRenderer {
@@ -84,6 +92,7 @@ export class MapRenderer {
   /** Dust kicked up by marching columns. */
   private dust: { x: number; y: number; t: number; owner: Owner }[] = [];
   private lastNow = 0;
+  private fogCanvas: HTMLCanvasElement | null = null;
 
   constructor(readonly canvas: HTMLCanvasElement) {
     this.ctx = canvas.getContext('2d')!;
@@ -150,26 +159,56 @@ export class MapRenderer {
       ctx.drawImage(this.bg, 0, 0, WORLD_W, WORLD_H);
     }
 
-    // Roads.
+    // Roads: dirt, marsh (slow, green and broken) or paved (fast, pale stone).
     for (const e of m.edges) {
       const a = m.nodes[e.a];
       const b = m.nodes[e.b];
       ctx.lineCap = 'round';
       ctx.strokeStyle = 'rgba(0,0,0,0.55)';
-      ctx.lineWidth = 14;
+      ctx.lineWidth = e.road === 'paved' ? 16 : 14;
       ctx.beginPath();
       ctx.moveTo(a.x, a.y);
       ctx.lineTo(b.x, b.y);
       ctx.stroke();
-      ctx.strokeStyle = '#3a322b';
-      ctx.lineWidth = 8;
+      ctx.strokeStyle = e.road === 'marsh' ? '#2c3a2a' : e.road === 'paved' ? '#5b544a' : '#3a322b';
+      ctx.lineWidth = e.road === 'paved' ? 10 : 8;
       ctx.stroke();
       ctx.save();
-      ctx.setLineDash([10, 14]);
-      ctx.strokeStyle = 'rgba(220,200,170,0.18)';
-      ctx.lineWidth = 2;
+      if (e.road === 'marsh') {
+        ctx.setLineDash([4, 9]);
+        ctx.strokeStyle = 'rgba(120,170,110,0.45)';
+        ctx.lineWidth = 3;
+      } else if (e.road === 'paved') {
+        ctx.setLineDash([]);
+        ctx.strokeStyle = 'rgba(230,220,200,0.35)';
+        ctx.lineWidth = 2;
+      } else {
+        ctx.setLineDash([10, 14]);
+        ctx.strokeStyle = 'rgba(220,200,170,0.18)';
+        ctx.lineWidth = 2;
+      }
       ctx.stroke();
       ctx.restore();
+    }
+
+    // Fog of war over the land you cannot currently see.
+    const fogged = g.fog && g.spyUntil[0] <= g.time;
+    if (fogged) {
+      ctx.imageSmoothingEnabled = true;
+      ctx.drawImage(this.fogLayer(g), 0, 0, WORLD_W, WORLD_H);
+    }
+    const visible = (x: number, y: number) => canSee(g, 0, x, y);
+
+    // Your rally routes.
+    for (const n of g.nodes) {
+      if (n.owner !== 0 || n.rallyTo === null) continue;
+      this.routeArrow(m.nodes[n.id], m.nodes[n.rallyTo], ui.now, 'rgba(159,240,181,0.85)');
+    }
+    if (ui.rallyDrag) {
+      const a = m.nodes[ui.rallyDrag.from];
+      const t = ui.rallyDrag.target !== null ? m.nodes[ui.rallyDrag.target] : null;
+      const to = t ?? { ...this.s2w(ui.rallyDrag.x, ui.rallyDrag.y), kind: 'village' as const };
+      this.routeArrow(a, to as MapNode, ui.now, 'rgba(159,240,181,0.95)');
     }
 
     // Drag preview.
@@ -204,6 +243,7 @@ export class MapRenderer {
     for (const d of this.dust) d.t += dt;
     this.dust = this.dust.filter((d) => d.t < 1.1);
     for (const c of g.columns) {
+      if (c.owner !== 0 && !visible(columnPos(g, c).x, columnPos(g, c).y)) continue;
       if (Math.random() < dt * 14) {
         const p = columnPos(g, c);
         const a = m.nodes[c.from];
@@ -222,9 +262,41 @@ export class MapRenderer {
     // Columns on the march.
     for (const c of g.columns) {
       const p = columnPos(g, c);
+      if (c.owner !== 0 && !visible(p.x, p.y)) continue;
       const a = m.nodes[c.from];
       const b = m.nodes[c.path[0]];
       const ang = Math.atan2(b.y - a.y, b.x - a.x);
+      // Spy: see where enemy columns are heading.
+      if (c.owner !== 0 && g.spyUntil[0] > g.time) {
+        const dest = m.nodes[c.path[c.path.length - 1]];
+        ctx.save();
+        ctx.setLineDash([6, 8]);
+        ctx.strokeStyle = 'rgba(168,220,255,0.6)';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(p.x, p.y);
+        ctx.lineTo(dest.x, dest.y);
+        ctx.stroke();
+        ctx.restore();
+      }
+      if (c.forcedUntil > g.time) {
+        ctx.strokeStyle = 'rgba(255,230,180,0.6)';
+        ctx.lineWidth = 2;
+        for (let k = 0; k < 3; k++) {
+          const off = (k - 1) * 7;
+          ctx.beginPath();
+          ctx.moveTo(p.x - Math.cos(ang) * 30 + Math.cos(ang + Math.PI / 2) * off, p.y - Math.sin(ang) * 30 + Math.sin(ang + Math.PI / 2) * off);
+          ctx.lineTo(p.x - Math.cos(ang) * 55 + Math.cos(ang + Math.PI / 2) * off, p.y - Math.sin(ang) * 55 + Math.sin(ang + Math.PI / 2) * off);
+          ctx.stroke();
+        }
+      }
+      if (ui.targeting === 'march' && c.owner === 0) {
+        ctx.strokeStyle = `rgba(255,209,102,${0.5 + 0.5 * Math.sin(ui.now * 10)})`;
+        ctx.lineWidth = 3;
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, 26, 0, Math.PI * 2);
+        ctx.stroke();
+      }
       const dots = Math.min(9, Math.max(2, Math.ceil(c.troops / 5)));
       for (let i = 0; i < dots; i++) {
         const row = Math.floor(i / 3);
@@ -245,12 +317,25 @@ export class MapRenderer {
     // Nodes.
     for (const n of m.nodes) this.drawNode(g, n, ui);
 
-    // Battles.
-    for (const b of activeBattles(g)) this.drawBattle(g, b, ui);
+    // Battles: hidden in fog unless you can see them or are fighting in them.
+    for (const b of activeBattles(g)) {
+      const mine = (sideOf(b, 0)?.troops ?? 0) > 0.5;
+      if (!mine && !visible(b.x, b.y)) continue;
+      this.drawBattle(g, b, ui);
+      if (ui.targeting === 'inspire' && mine) {
+        const p = this.markerPos(g, b);
+        ctx.strokeStyle = `rgba(255,209,102,${0.5 + 0.5 * Math.sin(ui.now * 10)})`;
+        ctx.lineWidth = 4;
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, 50, 0, Math.PI * 2);
+        ctx.stroke();
+      }
+    }
 
     // A stronghold changing hands: a burst ring and a flag raised on the spot.
     for (const e of g.events) {
       if (e.kind !== 'captured' && e.kind !== 'lost') continue;
+      if (!visible(e.x, e.y)) continue;
       const age = g.time - e.t;
       if (age > 1.4) continue;
       const col = OWNER_COLOR[e.owner];
@@ -275,6 +360,7 @@ export class MapRenderer {
     // Event floaters.
     for (const e of g.events) {
       if (e.kind === 'battle' || e.kind === 'qte') continue;
+      if (!visible(e.x, e.y)) continue;
       const age = g.time - e.t;
       if (age > 3) continue;
       ctx.globalAlpha = 1 - age / 3;
@@ -284,6 +370,78 @@ export class MapRenderer {
       ctx.fillText(e.text, e.x, e.y - 100 - age * 14);
       ctx.globalAlpha = 1;
     }
+  }
+
+  /** Draw the selection box (screen pixels) on top of everything. */
+  drawOverlay(ui: MapUi) {
+    if (!ui.box) return;
+    const { ctx } = this;
+    ctx.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
+    const { x0, y0, x1, y1 } = ui.box;
+    ctx.fillStyle = 'rgba(226,54,77,0.08)';
+    ctx.strokeStyle = 'rgba(255,138,152,0.85)';
+    ctx.lineWidth = 1;
+    ctx.fillRect(Math.min(x0, x1), Math.min(y0, y1), Math.abs(x1 - x0), Math.abs(y1 - y0));
+    ctx.strokeRect(Math.min(x0, x1) + 0.5, Math.min(y0, y1) + 0.5, Math.abs(x1 - x0), Math.abs(y1 - y0));
+  }
+
+  /** Low-resolution fog mask: dark everywhere except what you can see. */
+  private fogLayer(g: Game): HTMLCanvasElement {
+    const k = 0.25;
+    const c = this.fogCanvas ?? document.createElement('canvas');
+    c.width = WORLD_W * k;
+    c.height = WORLD_H * k;
+    const ctx = c.getContext('2d')!;
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.clearRect(0, 0, c.width, c.height);
+    ctx.fillStyle = 'rgba(3,4,8,0.62)';
+    ctx.fillRect(0, 0, c.width, c.height);
+    ctx.globalCompositeOperation = 'destination-out';
+    const hole = (x: number, y: number, r: number) => {
+      const grad = ctx.createRadialGradient(x * k, y * k, r * k * 0.7, x * k, y * k, r * k);
+      grad.addColorStop(0, 'rgba(0,0,0,1)');
+      grad.addColorStop(1, 'rgba(0,0,0,0)');
+      ctx.fillStyle = grad;
+      ctx.beginPath();
+      ctx.arc(x * k, y * k, r * k, 0, Math.PI * 2);
+      ctx.fill();
+    };
+    for (const n of g.nodes) {
+      if (n.owner !== 0) continue;
+      const mn = g.map.nodes[n.id];
+      hole(mn.x, mn.y, mn.special === 'watchtower' ? VISION_TOWER : VISION_NODE);
+    }
+    for (const col of g.columns) if (col.owner === 0) hole(columnPos(g, col).x, columnPos(g, col).y, VISION_COLUMN);
+    for (const b of activeBattles(g)) if ((sideOf(b, 0)?.troops ?? 0) > 0.5) hole(b.x, b.y, VISION_BATTLE);
+    ctx.globalCompositeOperation = 'source-over';
+    this.fogCanvas = c;
+    return c;
+  }
+
+  /** Animated dashed arrow for rally routes. */
+  private routeArrow(a: { x: number; y: number }, b: MapNode | { x: number; y: number; kind: string }, now: number, color: string) {
+    const { ctx } = this;
+    const ang = Math.atan2(b.y - a.y, b.x - a.x);
+    const r = 'id' in b ? nodeRadius(b as MapNode) + 10 : 0;
+    const end = { x: b.x - Math.cos(ang) * r, y: b.y - Math.sin(ang) * r };
+    ctx.save();
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 3;
+    ctx.setLineDash([3, 9]);
+    ctx.lineDashOffset = -now * 30;
+    ctx.beginPath();
+    ctx.moveTo(a.x + Math.cos(ang) * 44, a.y + Math.sin(ang) * 44);
+    ctx.lineTo(end.x, end.y);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.fillStyle = color;
+    ctx.beginPath();
+    ctx.moveTo(end.x, end.y);
+    ctx.lineTo(end.x - Math.cos(ang - 0.5) * 14, end.y - Math.sin(ang - 0.5) * 14);
+    ctx.lineTo(end.x - Math.cos(ang + 0.5) * 14, end.y - Math.sin(ang + 0.5) * 14);
+    ctx.closePath();
+    ctx.fill();
+    ctx.restore();
   }
 
   private pill(text: string, x: number, y: number, owner: Owner) {
@@ -326,7 +484,10 @@ export class MapRenderer {
     const { ctx } = this;
     const st = g.nodes[n.id];
     const r = nodeRadius(n);
-    const own = st.owner;
+    // Under fog you see your last sighting of nodes out of view, dimmed and marked "?".
+    const known = knownNode(g, 0, n.id);
+    const own = known.owner;
+    if (!known.live) ctx.globalAlpha = 0.62;
     // Glow.
     const glow = ctx.createRadialGradient(n.x, n.y, r * 0.6, n.x, n.y, r * 1.9);
     glow.addColorStop(0, OWNER_COLOR[own] + '55');
@@ -356,12 +517,44 @@ export class MapRenderer {
     ctx.font = `700 ${n.kind === 'capital' ? 32 : 28}px "Chakra Petch", sans-serif`;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
-    ctx.fillText(st.battleId !== null ? '⚔' : String(Math.floor(st.troops)), n.x, n.y + 6);
+    const label = !known.live ? `${Math.floor(known.troops)}?` : st.battleId !== null ? '⚔' : String(Math.floor(st.troops));
+    ctx.fillText(label, n.x, n.y + 6);
     ctx.textBaseline = 'alphabetic';
     // Name.
     ctx.font = '700 20px "Chakra Petch", sans-serif';
     ctx.fillStyle = 'rgba(241,230,232,0.82)';
     ctx.fillText(n.name.toUpperCase(), n.x, n.y + r + 30);
+    ctx.globalAlpha = 1;
+    // Special stronghold badge.
+    if (n.special) {
+      const bx = n.x + r * 0.78;
+      const by = n.y + r * 0.62;
+      ctx.fillStyle = '#1a1408';
+      ctx.strokeStyle = '#ffd166';
+      ctx.lineWidth = 2.5;
+      ctx.beginPath();
+      ctx.arc(bx, by, 14, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+      ctx.fillStyle = '#ffd166';
+      ctx.font = '700 16px "Chakra Petch", sans-serif';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(SPECIALS[n.special].glyph, bx, by + 1);
+      ctx.textBaseline = 'alphabetic';
+    }
+    // Selected for multi-send.
+    if (ui.selected.has(n.id)) {
+      ctx.save();
+      ctx.setLineDash([6, 6]);
+      ctx.lineDashOffset = -ui.now * 20;
+      ctx.strokeStyle = '#ffffff';
+      ctx.lineWidth = 2.5;
+      ctx.beginPath();
+      ctx.arc(n.x, n.y, r + 15, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.restore();
+    }
   }
 
   private kindIcon(n: MapNode, color: string) {
@@ -453,7 +646,7 @@ export class MapRenderer {
     order.forEach((s, i) => this.pill(String(Math.ceil(s.troops)), p.x + (i === 0 ? -1 : 1) * (R + 34) + (i > 1 ? 56 : 0), p.y, s.owner));
     // Commanders present.
     if (g.presence[0] === b.id) this.flag(p.x - 6, p.y - R - 10, 0, 'YOU');
-    if (g.presence[1] === b.id) this.flag(p.x + 6, p.y - R - 10, 1, inDuel(g, b) ? 'DUEL!' : 'ENEMY CMDR');
+    if (g.presence[1] === b.id && canSee(g, 0, b.x, b.y)) this.flag(p.x + 6, p.y - R - 10, 1, inDuel(g, b) ? 'DUEL!' : 'ENEMY CMDR');
   }
 
   private flag(x: number, y: number, owner: Owner, text: string) {

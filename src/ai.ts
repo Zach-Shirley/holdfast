@@ -2,6 +2,11 @@ import { NODE_STATS, edgeBetween, hops } from './map';
 import { mulberry32, type Rng } from './rng';
 import {
   COLUMN_SPEED,
+  canSee,
+  columnPos,
+  knownNode,
+  setRally,
+  useAbility,
   MATCH_TIME,
   activeBattles,
   applyQte,
@@ -60,11 +65,22 @@ export function createAi(me: Player, level: Difficulty, seed = 1, commander = tr
 }
 
 const VALUE = { capital: 6, fort: 2.4, village: 3 };
+/** Extra value of special strongholds (a Watchtower matters more under fog). */
+function specialValue(g: Game, node: number): number {
+  const sp = g.map.nodes[node].special;
+  if (sp === 'barracks') return 1.5;
+  if (sp === 'forge' || sp === 'shrine') return 1;
+  if (sp === 'watchtower') return g.fog ? 1.4 : 0.6;
+  return 0;
+}
 const QTE_KINDS: QteKind[] = ['volley', 'parry', 'slash', 'banner'];
 
 /** Enemy troops currently marching at a node (next stop or destination). */
 function incoming(g: Game, node: number, enemyOf: Player): number {
-  return g.columns.filter((c) => c.owner !== enemyOf && c.path[0] === node).reduce((t, c) => t + c.troops, 0);
+  // Under fog the AI only reacts to enemy columns it can actually see.
+  return g.columns
+    .filter((c) => c.owner !== enemyOf && c.path[0] === node && canSee(g, enemyOf, columnPos(g, c).x, columnPos(g, c).y))
+    .reduce((t, c) => t + c.troops, 0);
 }
 
 function friendlyIncoming(g: Game, node: number, me: Player): number {
@@ -140,8 +156,9 @@ function think(g: Game, ai: AiState) {
     if (avoid(t)) continue;
     const tn = g.nodes[t];
     const kind = m.nodes[t].kind;
+    const known = knownNode(g, me, t);
     let est: number;
-    if (tn.battleId !== null) {
+    if (tn.battleId !== null && canSee(g, me, m.nodes[t].x, m.nodes[t].y)) {
       const b = getBattle(g, tn.battleId)!;
       const foes = b.sides.filter((s) => s.owner !== me).reduce((s2, s) => s2 + s.troops, 0);
       const own = sideOf(b, me)?.troops ?? 0;
@@ -152,7 +169,9 @@ function think(g: Game, ai: AiState) {
       const sources0 = m.adj[t].filter((k) => g.nodes[k].owner === me);
       const travel = Math.min(...sources0.map((k) => edgeBetween(m, k, t)!.len)) / COLUMN_SPEED;
       // Walls multiply the defenders' damage; in a slugging match that is worth about sqrt(defence) in numbers.
-      est = (tn.troops + (tn.owner !== 2 ? NODE_STATS[kind].growth * travel : 0)) * Math.sqrt(NODE_STATS[kind].defense);
+      // Under fog this is the last sighting, plus growth since then.
+      const since = known.live ? 0 : g.time - (g.memory[me][t]?.t ?? 0);
+      est = (known.troops + (known.owner !== 2 ? NODE_STATS[kind].growth * (travel + since) : 0)) * Math.sqrt(NODE_STATS[kind].defense);
     }
     // The longer we sit idle, the readier we are to take an even fight and let the commander swing it.
     let margin = Math.max(0.6, L.margin - ((g.time - ai.lastGainAt) / 60) * 0.3);
@@ -163,7 +182,7 @@ function think(g: Game, ai: AiState) {
     if (needed < 6) continue;
     const sources = m.adj[t].filter((k) => available(g, k, me) >= 3).sort((p, q) => available(g, q, me) - available(g, p, me)).slice(0, 2);
     const pool = sources.reduce((s, k) => s + available(g, k, me), 0);
-    let score = (VALUE[kind] + (tn.owner === 2 ? 0.6 : 0)) / needed;
+    let score = (VALUE[kind] + specialValue(g, t) + (known.owner === 2 ? 0.6 : 0)) / needed;
     if (focusNode !== null && hops(m, focusNode, t) >= 2) score *= 1.4;
     targets.push({ t, score, needed, sources, pool } as { t: number; score: number; needed: number; sources: number[]; pool: number });
   }
@@ -189,15 +208,22 @@ function think(g: Game, ai: AiState) {
       const amt = Math.min(available(g, k, me), left);
       // Walls call for an assault; open villages for speed.
       const stance = m.nodes[tg.t].kind === 'village' ? 'skirmish' : 'assault';
-      if (amt >= 1 && sendTroops(g, me, k, tg.t, amt, stance)) left -= amt;
+      const col = amt >= 1 ? sendTroops(g, me, k, tg.t, amt, stance) : null;
+      if (!col) continue;
+      left -= amt;
+      // Big attacks get a Forced March (not on Easy).
+      if (ai.level !== 'easy' && col.troops >= 12) useAbility(g, me, 'march', col.id);
     }
   }
+  if (g.fog && ai.level !== 'easy' && g.time > 20) useAbility(g, me, 'spy');
 
-  // 3. Push spare troops from safe interior nodes toward the front.
+  // 3. Rally routes: safe interior nodes forward their growth to the nearest front-line node.
   for (const n of mine) {
-    if (n.battleId !== null || n.troops < 18) continue;
     const exposed = m.adj[n.id].some((k) => g.nodes[k].owner !== me);
-    if (exposed) continue;
+    if (exposed) {
+      if (n.rallyTo !== null) setRally(g, me, n.id, null);
+      continue;
+    }
     let best = -1;
     let bestD = Infinity;
     for (const f of mine) {
@@ -208,7 +234,7 @@ function think(g: Game, ai: AiState) {
         best = f.id;
       }
     }
-    if (best >= 0) sendTroops(g, me, n.id, best, n.troops - reserve(g, n.id), 'skirmish');
+    if (best >= 0 && n.rallyTo !== best) setRally(g, me, n.id, best);
   }
 }
 
@@ -258,6 +284,10 @@ function commander(g: Game, ai: AiState, dt: number) {
     applyQte(g, g.presence[me]!, me, kind, ai.rng() < L.success);
     const b = getBattle(g, g.presence[me]);
     if (b && (sideOf(b, me)?.rally ?? 0) >= 1) useFinisher(g, b.id, me);
+    // Inspire a close fight that is slipping away.
+    const own = b ? sideOf(b, me)?.troops ?? 0 : 0;
+    const foe = b ? b.sides.filter((x) => x.owner !== me).reduce((t, x) => t + Math.max(0, x.troops), 0) : 0;
+    if (b && own > 5 && own / (own + foe) < 0.55) useAbility(g, me, 'inspire', b.id);
   }
 }
 

@@ -1,4 +1,4 @@
-import { NODE_STATS, edgeBetween, type GraphMap } from './map';
+import { NODE_STATS, ROAD_SPEED, edgeBetween, type GraphMap, type Special } from './map';
 import { mulberry32 } from './rng';
 
 /** 0 = you, 1 = AI, 2 = neutral. */
@@ -40,11 +40,33 @@ export const RETREAT_LOSS = 0.15;
 export const ROUT_AT = 0.25;
 export const ROUT_DAMAGE = 1.25;
 
+/** Vision ranges (world units) when fog of war is on. */
+export const VISION_NODE = 300;
+export const VISION_TOWER = 580;
+export const VISION_COLUMN = 220;
+export const VISION_BATTLE = 200;
+/** Barracks growth multiplier, Forge starting momentum, Shrine quick-time multiplier. */
+export const BARRACKS_GROWTH = 1.5;
+export const FORGE_MOMENTUM = 0.3;
+export const SHRINE_POWER = 1.25;
+/** A rally route forwards everything above this reserve once at least 6 troops are spare. */
+export const RALLY_RESERVE = 5;
+
+/** Commander abilities, used from the map on cooldowns. */
+export type Ability = 'march' | 'inspire' | 'spy';
+export const ABILITIES: Record<Ability, { label: string; desc: string; cooldown: number; duration: number }> = {
+  march: { label: 'March', desc: 'Pick one of your columns: it moves twice as fast for 15 s.', cooldown: 45, duration: 15 },
+  inspire: { label: 'Inspire', desc: 'Pick one of your battles: +0.6 momentum and +50% rally.', cooldown: 60, duration: 0 },
+  spy: { label: 'Spy', desc: 'For 20 s: see the whole map and where enemy columns are heading.', cooldown: 75, duration: 20 },
+};
+
 export interface NodeState {
   id: number;
   owner: Owner;
   troops: number;
   battleId: number | null;
+  /** Rally route: surplus troops are forwarded here automatically. */
+  rallyTo: number | null;
 }
 
 export interface Column {
@@ -60,6 +82,8 @@ export interface Column {
   edgeLen: number;
   battleId: number | null;
   stance: Stance;
+  /** Forced March: moves twice as fast until this time. */
+  forcedUntil: number;
 }
 
 export interface Side {
@@ -124,13 +148,25 @@ export interface Game {
   presence: [number | null, number | null];
   events: GameEvent[];
   stats: [PlayerStats, PlayerStats];
+  fog: boolean;
+  /** What each player last saw of every node (used under fog of war). */
+  memory: [Record<number, { owner: Owner; troops: number; t: number }>, Record<number, { owner: Owner; troops: number; t: number }>];
+  /** When each player's abilities are ready again. */
+  abilityReady: [Record<Ability, number>, Record<Ability, number>];
+  spyUntil: [number, number];
+  rallyTimer: number;
+  visionTimer: number;
+}
+
+export interface GameOptions {
+  fog?: boolean;
 }
 
 const emptyStats = (): PlayerStats => ({ battlesFought: 0, battlesWon: 0, qtePlayed: 0, qteHit: 0, troopsSent: 0, nodesTaken: 0, finishers: 0, retreats: 0, duels: 0, duelsWon: 0 });
 
-export function createGame(map: GraphMap): Game {
+export function createGame(map: GraphMap, opts: GameOptions = {}): Game {
   const rng = mulberry32(map.seed ^ 0x51ed);
-  const nodes: NodeState[] = map.nodes.map((n) => ({ id: n.id, owner: 2, troops: 0, battleId: null }));
+  const nodes: NodeState[] = map.nodes.map((n) => ({ id: n.id, owner: 2, troops: 0, battleId: null, rallyTo: null }));
   const [c0, c1] = map.capitals;
   nodes[c0].owner = 0;
   nodes[c1].owner = 1;
@@ -154,7 +190,98 @@ export function createGame(map: GraphMap): Game {
     presence: [null, null],
     events: [],
     stats: [emptyStats(), emptyStats()],
+    fog: !!opts.fog,
+    // The starting layout is common knowledge.
+    memory: [
+      Object.fromEntries(nodes.map((n) => [n.id, { owner: n.owner, troops: n.troops, t: 0 }])),
+      Object.fromEntries(nodes.map((n) => [n.id, { owner: n.owner, troops: n.troops, t: 0 }])),
+    ],
+    abilityReady: [
+      { march: 0, inspire: 0, spy: 0 },
+      { march: 0, inspire: 0, spy: 0 },
+    ],
+    spyUntil: [-1, -1],
+    rallyTimer: 1,
+    visionTimer: 0,
   };
+}
+
+/** Does `owner` hold a stronghold of this special kind at, or next to, any of these nodes? */
+export function specialNear(g: Game, owner: Owner, nodes: number[], kind: Special): boolean {
+  if (owner === 2) return false;
+  for (const id of nodes) {
+    for (const k of [id, ...g.map.adj[id]]) {
+      if (g.map.nodes[k].special === kind && g.nodes[k].owner === owner) return true;
+    }
+  }
+  return false;
+}
+
+/** The nodes a battle touches: its node, or both ends of its road. */
+export function battleNodes(b: Battle): number[] {
+  return b.nodeId !== null ? [b.nodeId] : [b.road!.a, b.road!.b];
+}
+
+/** Can `viewer` see this point? Always true without fog, or while their Spy is active. */
+export function canSee(g: Game, viewer: Player, x: number, y: number): boolean {
+  if (!g.fog || g.spyUntil[viewer] > g.time) return true;
+  for (const n of g.nodes) {
+    if (n.owner !== viewer) continue;
+    const mn = g.map.nodes[n.id];
+    const r = mn.special === 'watchtower' ? VISION_TOWER : VISION_NODE;
+    if (Math.hypot(mn.x - x, mn.y - y) <= r) return true;
+  }
+  for (const c of g.columns) {
+    if (c.owner !== viewer) continue;
+    const p = columnPos(g, c);
+    if (Math.hypot(p.x - x, p.y - y) <= VISION_COLUMN) return true;
+  }
+  for (const b of g.battles) {
+    if (b.endedAt !== null || (sideOf(b, viewer)?.troops ?? 0) <= 0.5) continue;
+    if (Math.hypot(b.x - x, b.y - y) <= VISION_BATTLE) return true;
+  }
+  return false;
+}
+
+/** What `viewer` knows about a node: live if visible, otherwise their last sighting. */
+export function knownNode(g: Game, viewer: Player, id: number): { owner: Owner; troops: number; live: boolean } {
+  const mn = g.map.nodes[id];
+  if (canSee(g, viewer, mn.x, mn.y)) return { owner: g.nodes[id].owner, troops: g.nodes[id].troops, live: true };
+  const m = g.memory[viewer][id];
+  return { owner: m.owner, troops: m.troops, live: false };
+}
+
+/** Set (or clear, with `to` null) a rally route from one of your strongholds to another. */
+export function setRally(g: Game, owner: Player, from: number, to: number | null): boolean {
+  const n = g.nodes[from];
+  if (n.owner !== owner) return false;
+  if (to === null || to === from) {
+    n.rallyTo = null;
+    return true;
+  }
+  if (g.nodes[to].owner !== owner) return false;
+  n.rallyTo = to;
+  return true;
+}
+
+/** Use a commander ability. `target` is a column id (march) or a battle id (inspire). */
+export function useAbility(g: Game, owner: Player, ability: Ability, target?: number): boolean {
+  if (g.winner !== null || g.abilityReady[owner][ability] > g.time) return false;
+  if (ability === 'march') {
+    const c = g.columns.find((x) => x.id === target && x.owner === owner);
+    if (!c) return false;
+    c.forcedUntil = g.time + ABILITIES.march.duration;
+  } else if (ability === 'inspire') {
+    const b = getBattle(g, target ?? null);
+    const me = b && sideOf(b, owner);
+    if (!b || !me || b.endedAt !== null || me.troops <= 0.5) return false;
+    me.momentum = Math.min(MOMENTUM_MAX, me.momentum + 0.6);
+    me.rally = Math.min(1, me.rally + 0.5);
+  } else {
+    g.spyUntil[owner] = g.time + ABILITIES.spy.duration;
+  }
+  g.abilityReady[owner][ability] = g.time + ABILITIES[ability].cooldown;
+  return true;
 }
 
 export const activeBattles = (g: Game) => g.battles.filter((b) => b.endedAt === null);
@@ -254,6 +381,7 @@ export function sendTroops(g: Game, owner: Player, from: number, to: number, amo
     edgeLen: edgeBetween(g.map, from, path[0])!.len,
     battleId: null,
     stance,
+    forcedUntil: 0,
   };
   g.columns.push(col);
   g.stats[owner].troopsSent += n;
@@ -274,6 +402,7 @@ function posOnRoad(c: Column, a: number): number {
 
 function startBattle(g: Game, nodeId: number | null, road: Battle['road'], x: number, y: number, sides: Side[]): Battle {
   const b: Battle = { id: g.nextId++, nodeId, road, x, y, sides, startedAt: g.time, endedAt: null, winner: null, peak: {} };
+  for (const s of sides) if (specialNear(g, s.owner, battleNodes(b), 'forge')) s.momentum += FORGE_MOMENTUM;
   for (const s of sides) b.peak[s.owner] = s.troops;
   g.battles.push(b);
   for (const s of sides) if (s.owner !== 2) g.stats[s.owner].battlesFought++;
@@ -283,7 +412,7 @@ function startBattle(g: Game, nodeId: number | null, road: Battle['road'], x: nu
 function joinBattle(g: Game, b: Battle, owner: Owner, troops: number, march?: Side['march'], stance?: Stance) {
   let s = sideOf(b, owner);
   if (!s) {
-    s = { owner, troops: 0, momentum: 1, rally: 0, march, stance };
+    s = { owner, troops: 0, momentum: 1 + (specialNear(g, owner, battleNodes(b), 'forge') ? FORGE_MOMENTUM : 0), rally: 0, march, stance };
     b.sides.push(s);
     if (owner !== 2) g.stats[owner].battlesFought++;
   }
@@ -342,6 +471,7 @@ function endBattle(g: Game, b: Battle) {
     const prevOwner = node.owner;
     node.owner = win.owner;
     node.troops = win.troops;
+    if (prevOwner !== win.owner) node.rallyTo = null;
     if (prevOwner !== win.owner) {
       if (win.owner !== 2) g.stats[win.owner].nodesTaken++;
       if (win.owner === 0) event(g, { kind: 'captured', text: `You took ${mn.name}`, owner: 0, x: mn.x, y: mn.y });
@@ -352,7 +482,7 @@ function endBattle(g: Game, b: Battle) {
   }
   // Road battle: the survivors march on.
   if (win && win.march && win.owner !== 2) {
-    g.columns.push({ id: g.nextId++, owner: win.owner, troops: win.troops, from: win.march.from, path: win.march.path, progress: win.march.progress, edgeLen: win.march.edgeLen, battleId: null, stance: win.stance ?? 'assault' });
+    g.columns.push({ id: g.nextId++, owner: win.owner, troops: win.troops, from: win.march.from, path: win.march.path, progress: win.march.progress, edgeLen: win.march.edgeLen, battleId: null, stance: win.stance ?? 'assault', forcedUntil: 0 });
     if (win.owner === 0) event(g, { kind: 'won', text: 'Your column broke through', owner: 0, x: b.x, y: b.y });
   }
 }
@@ -365,8 +495,9 @@ export function applyQte(g: Game, battleId: number, owner: Player, kind: QteKind
   if (success) g.stats[owner].qteHit++;
   if (!b || !me || b.endedAt !== null) return '';
   me.rally = Math.max(0, Math.min(1, me.rally + (success ? RALLY_PER_HIT : -RALLY_PER_MISS)));
-  const kill = (frac: number) => killEnemies(b, owner, frac, QTE_POWER);
-  const bump = (d: number) => bumpMomentum(me, d);
+  const shrine = specialNear(g, owner, battleNodes(b), 'shrine') ? SHRINE_POWER : 1;
+  const kill = (frac: number) => killEnemies(b, owner, frac, QTE_POWER * shrine);
+  const bump = (d: number) => bumpMomentum(me, d * shrine);
   switch (kind) {
     case 'volley':
       return success ? `Volley! ${kill(0.07)} down` : 'Volley missed';
@@ -461,13 +592,13 @@ export function retreat(g: Game, battleId: number, owner: Player): Column | null
   if (b.nodeId !== null) {
     const path = route(g, owner, b.nodeId, dest);
     if (!path || !path.length) return null;
-    col = { id: g.nextId++, owner, troops, from: b.nodeId, path, progress: 0, edgeLen: edgeBetween(g.map, b.nodeId, path[0])!.len, battleId: null, stance: 'skirmish' };
+    col = { id: g.nextId++, owner, troops, from: b.nodeId, path, progress: 0, edgeLen: edgeBetween(g.map, b.nodeId, path[0])!.len, battleId: null, stance: 'skirmish', forcedUntil: 0 };
   } else {
     // Turn around on the road and head back the way we came.
     const mch = side.march!;
     const back = mch.from;
     const tail = back === dest ? [] : route(g, owner, back, dest) ?? [];
-    col = { id: g.nextId++, owner, troops, from: mch.path[0], path: [back, ...tail], progress: Math.max(0, mch.edgeLen - mch.progress), edgeLen: mch.edgeLen, battleId: null, stance: 'skirmish' };
+    col = { id: g.nextId++, owner, troops, from: mch.path[0], path: [back, ...tail], progress: Math.max(0, mch.edgeLen - mch.progress), edgeLen: mch.edgeLen, battleId: null, stance: 'skirmish', forcedUntil: 0 };
   }
   b.sides = b.sides.filter((s) => s !== side);
   g.columns.push(col);
@@ -518,7 +649,8 @@ export function applyPursuit(g: Game, battleId: number, owner: Player, hits: num
   if (hits > 0) g.stats[owner].qteHit++;
   if (!b || !me || b.endedAt !== null || hits <= 0) return hits <= 0 ? 'They got away' : '';
   me.rally = Math.min(1, me.rally + RALLY_PER_HIT);
-  return `Pursuit: ${killEnemies(b, owner, 0.05 * hits, QTE_POWER)} cut down`;
+  const shrine = specialNear(g, owner, battleNodes(b), 'shrine') ? SHRINE_POWER : 1;
+  return `Pursuit: ${killEnemies(b, owner, 0.05 * hits, QTE_POWER * shrine)} cut down`;
 }
 
 /** Every troop a player has: garrisons, columns and soldiers in battles. */
@@ -539,9 +671,38 @@ export function step(g: Game, dt: number) {
   for (const n of g.nodes) {
     if (n.owner === 2 || n.battleId !== null) continue;
     const st = NODE_STATS[m.nodes[n.id].kind];
-    if (n.troops < st.cap) n.troops = Math.min(st.cap, n.troops + st.growth * dt);
+    const growth = st.growth * (m.nodes[n.id].special === 'barracks' ? BARRACKS_GROWTH : 1);
+    if (n.troops < st.cap) n.troops = Math.min(st.cap, n.troops + growth * dt);
     // Overfull garrisons desert: the excess drains off by 6% per second.
     else n.troops = Math.max(st.cap, n.troops - (n.troops - st.cap) * 0.06 * dt - 0.2 * dt);
+  }
+
+  // Rally routes forward surplus troops once a second.
+  g.rallyTimer -= dt;
+  if (g.rallyTimer <= 0) {
+    g.rallyTimer = 1;
+    for (const n of g.nodes) {
+      if (n.rallyTo === null) continue;
+      if (n.owner === 2 || g.nodes[n.rallyTo].owner !== n.owner) {
+        n.rallyTo = null;
+        continue;
+      }
+      if (n.battleId !== null) continue;
+      const reserve = m.nodes[n.id].kind === 'capital' ? RALLY_RESERVE * 2 : RALLY_RESERVE;
+      const spare = Math.floor(n.troops - reserve);
+      if (spare >= 6) sendTroops(g, n.owner as Player, n.id, n.rallyTo, spare, 'hold');
+    }
+  }
+  // Each player remembers the last thing they saw of every node.
+  g.visionTimer -= dt;
+  if (g.fog && g.visionTimer <= 0) {
+    g.visionTimer = 0.5;
+    for (const p of [0, 1] as Player[]) {
+      for (const n of g.nodes) {
+        const mn = m.nodes[n.id];
+        if (canSee(g, p, mn.x, mn.y)) g.memory[p][n.id] = { owner: n.owner, troops: n.troops, t: g.time };
+      }
+    }
   }
 
   // Columns march. Opposing columns meeting on a road fight there; columns reaching a road
@@ -551,7 +712,8 @@ export function step(g: Game, dt: number) {
     if (c.battleId !== null) continue;
     const a = Math.min(c.from, c.path[0]);
     const before = posOnRoad(c, a);
-    c.progress += COLUMN_SPEED * STANCES[c.stance].speed * dt;
+    const road = edgeBetween(m, c.from, c.path[0])!.road;
+    c.progress += COLUMN_SPEED * STANCES[c.stance].speed * ROAD_SPEED[road] * (c.forcedUntil > g.time ? 2 : 1) * dt;
     const after = posOnRoad(c, a);
     const rb = roadBattles.find((b) => b.road!.a === a && b.road!.b === Math.max(c.from, c.path[0]) && (before - b.road!.pos) * (after - b.road!.pos) <= 0);
     if (rb) {

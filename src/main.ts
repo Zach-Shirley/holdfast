@@ -1,13 +1,20 @@
 import './style.css';
 import { aiStep, createAi, duelReaction, type AiState, type Difficulty } from './ai';
 import { BattleView } from './battleview';
-import { NODE_STATS, WORLD_H, WORLD_W, generateMap, type GraphMap } from './map';
+import { NODE_STATS, ROAD_SPEED, SPECIALS, WORLD_H, WORLD_W, generateMap, type GraphMap } from './map';
 import { MapRenderer, OWNER_COLOR, applyPalette, nodeRadius, paintBackground } from './render';
 import { prefs, savePrefs } from './prefs';
 import { applyVolume, audioSettings, audioState, initAudio, setIntensity, setMusic, sfx } from './sound';
 import {
+  ABILITIES,
   MATCH_TIME,
   STANCES,
+  canSee,
+  columnPos,
+  knownNode,
+  setRally,
+  useAbility,
+  type Ability,
   activeBattles,
   applyDuel,
   applyPursuit,
@@ -32,8 +39,14 @@ interface Settings {
   nodes: number;
   difficulty: Difficulty;
   seed: number;
+  fog: 'off' | 'on';
 }
-const settings: Settings = { nodes: 8, difficulty: 'normal', seed: randomSeed() };
+const settings: Settings = { nodes: 8, difficulty: 'normal', seed: randomSeed(), fog: 'off' };
+/** Strongholds picked with the selection box, for sending from several at once. */
+const selected = new Set<number>();
+let box: { x0: number; y0: number; x1: number; y1: number } | null = null;
+let rallyDrag: { from: number; x: number; y: number; target: number | null } | null = null;
+let targeting: 'march' | 'inspire' | null = null;
 let ratio = 0.5;
 let stance: Stance = 'assault';
 
@@ -66,6 +79,8 @@ app.innerHTML = `
     </div>
     <span class="dock-lbl">Stance</span>
     <div class="seg" id="stance">${(Object.keys(STANCES) as Stance[]).map((k) => `<button data-s="${k}" title="${STANCES[k].desc}">${STANCES[k].label}</button>`).join('')}</div>
+    <span class="dock-lbl">Orders</span>
+    <div class="seg" id="abilities">${(Object.keys(ABILITIES) as Ability[]).map((k) => `<button data-a="${k}" title="${ABILITIES[k].desc}">${ABILITIES[k].label}<small></small></button>`).join('')}</div>
     <div class="battles" id="battle-list"></div>
   </div>
   <div class="tip hidden" id="tip"></div>
@@ -84,6 +99,8 @@ app.innerHTML = `
           <div class="seg" data-key="nodes">${[6, 7, 8, 9, 10].map((n) => `<button data-v="${n}">${n}</button>`).join('')}</div>
           <h3 class="gap">Enemy</h3>
           <div class="seg" data-key="difficulty"><button data-v="easy">Easy</button><button data-v="normal">Normal</button><button data-v="hard">Hard</button></div>
+          <h3 class="gap">Fog of war</h3>
+          <div class="seg" data-key="fog"><button data-v="off">Off</button><button data-v="on">On</button></div>
           <h3 class="gap">Map</h3>
           <div class="seed-row"><label>Seed <input id="seed" type="number" min="1" max="99999" /></label><button id="reroll">New map</button></div>
         </div>
@@ -112,6 +129,13 @@ app.innerHTML = `
           <p><b>Rout:</b> a side below a quarter of its peak breaks and takes 25% extra losses. Chase a routing enemy with <b>Pursuit</b>.</p>
           <p><b>Stances</b> (dock): Assault +20% damage, Hold −20% damage taken, Skirmish +25% march speed. Each brings more of one event type.</p>
           <p>Red arrows at the screen edge point to your other battles that are going badly. Click one to jump there.</p>
+          <h3>The map</h3>
+          <p><b>Special strongholds</b> (gold badge): <b>B</b>arracks +50% growth · <b>W</b>atchtower sees far · <b>F</b>orge: your nearby battles start with +0.3 momentum · <b>S</b>hrine: +25% quick-time power nearby.</p>
+          <p>Roads: green dashed <b>marsh</b> is slow (×0.65), pale <b>paved</b> roads are fast (×1.3).</p>
+          <p><b>Rally routes:</b> right-drag from one of your strongholds to another to forward new troops there automatically. Right-click it to clear.</p>
+          <p><b>Multi-send:</b> drag a box around several strongholds, then drag from any of them to send from all.</p>
+          <p><b>Orders</b> (dock): Forced March (click a column: 2× speed for 15 s), Inspire (click a battle: +momentum and rally), Spy (20 s: see everything and where enemy columns are heading).</p>
+          <p><b>Fog of war</b> (optional): you only see near your strongholds and columns. Elsewhere you see the last sighting, marked "?".</p>
         </div>
         <div>
           <h3>Quick-time events (mouse only)</h3>
@@ -298,7 +322,9 @@ function drawPreview(m: GraphMap) {
 
 function startGame() {
   if (!map) map = generateMap(settings.seed, settings.nodes);
-  game = createGame(map);
+  game = createGame(map, { fog: settings.fog === 'on' });
+  selected.clear();
+  targeting = null;
   ai = createAi(1, settings.difficulty, settings.seed);
   renderer.setMap(map);
   onResize();
@@ -360,23 +386,68 @@ function leaveBattle() {
 
 // ---------- Map input ----------
 
+/** Troops a drag would send: from every selected stronghold if the drag starts on one of them. */
+function dragSources(from: number): number[] {
+  if (!game) return [];
+  const multi = selected.has(from) && selected.size > 1;
+  return (multi ? [...selected] : [from]).filter((id) => game!.nodes[id].owner === 0 && game!.nodes[id].battleId === null);
+}
+
+function dragAmount(from: number): number {
+  return dragSources(from).reduce((t, id) => t + Math.floor(game!.nodes[id].troops * ratio), 0);
+}
+
+/** Clicking a target for an ability that needs one. */
+function useTargeted(sx: number, sy: number) {
+  if (!game || !targeting) return;
+  if (targeting === 'march') {
+    const w = renderer.s2w(sx, sy);
+    const col = game.columns.filter((c) => c.owner === 0).sort((a, b) => Math.hypot(columnPos(game!, a).x - w.x, columnPos(game!, a).y - w.y) - Math.hypot(columnPos(game!, b).x - w.x, columnPos(game!, b).y - w.y))[0];
+    if (col && Math.hypot(columnPos(game, col).x - w.x, columnPos(game, col).y - w.y) < 60 && useAbility(game, 0, 'march', col.id)) sfx('send');
+    else toast('Click one of your marching columns', 'tgt');
+  } else {
+    const n = renderer.nodeAt(game, sx, sy);
+    const bid = renderer.battleAt(game, sx, sy) ?? (n !== null ? game.nodes[n].battleId : null);
+    if (bid !== null && useAbility(game, 0, 'inspire', bid)) sfx('charge');
+    else toast('Click one of your battles', 'tgt');
+  }
+  targeting = null;
+}
+
 canvas.addEventListener('contextmenu', (e) => e.preventDefault());
 canvas.addEventListener('mousedown', (e) => {
-  if (!game || game.winner !== null || e.button !== 0) return;
-  const bid = renderer.battleAt(game, e.offsetX, e.offsetY);
+  if (!game || game.winner !== null) return;
+  const x = e.offsetX;
+  const y = e.offsetY;
+  if (targeting) {
+    if (e.button === 0) useTargeted(x, y);
+    else targeting = null;
+    return;
+  }
+  const n = renderer.nodeAt(game, x, y);
+  if (e.button === 2) {
+    // Right-drag between your strongholds sets a rally route; right-click clears it.
+    if (n !== null && game.nodes[n].owner === 0) rallyDrag = { from: n, x, y, target: null };
+    return;
+  }
+  if (e.button !== 0) return;
+  const bid = renderer.battleAt(game, x, y);
   if (bid !== null) {
     enterBattle(bid);
     return;
   }
-  const n = renderer.nodeAt(game, e.offsetX, e.offsetY);
-  if (n === null) return;
+  if (n === null) {
+    box = { x0: x, y0: y, x1: x, y1: y };
+    return;
+  }
   const node = game.nodes[n];
   if (node.battleId !== null) {
     enterBattle(node.battleId);
     return;
   }
   if (node.owner !== 0) return;
-  drag = { from: n, x: e.offsetX, y: e.offsetY, target: null, amount: Math.floor(node.troops * ratio) };
+  if (!selected.has(n)) selected.clear();
+  drag = { from: n, x, y, target: null, amount: dragAmount(n) };
 });
 canvas.addEventListener('mousemove', (e) => {
   if (!game) return;
@@ -385,21 +456,57 @@ canvas.addEventListener('mousemove', (e) => {
     drag.x = e.offsetX;
     drag.y = e.offsetY;
     drag.target = hover !== null && hover !== drag.from ? hover : null;
-    drag.amount = Math.floor(game.nodes[drag.from].troops * ratio);
+    drag.amount = dragAmount(drag.from);
+  }
+  if (rallyDrag) {
+    rallyDrag.x = e.offsetX;
+    rallyDrag.y = e.offsetY;
+    rallyDrag.target = hover !== null && hover !== rallyDrag.from && game.nodes[hover].owner === 0 ? hover : null;
+  }
+  if (box) {
+    box.x1 = e.offsetX;
+    box.y1 = e.offsetY;
   }
   updateTip(e.offsetX, e.offsetY);
 });
 window.addEventListener('mouseup', () => {
-  if (!drag || !game) {
-    drag = null;
+  if (!game) {
+    drag = rallyDrag = box = null;
     return;
   }
-  if (drag.target !== null) {
-    const col = sendTroops(game, 0, drag.from, drag.target, drag.amount, stance);
-    if (!col) toast('Not enough troops to send', 'nosend');
+  if (drag && drag.target !== null) {
+    let sent = 0;
+    for (const id of dragSources(drag.from)) {
+      if (id === drag.target) continue;
+      if (sendTroops(game, 0, id, drag.target, Math.floor(game.nodes[id].troops * ratio), stance)) sent++;
+    }
+    if (!sent) toast('Not enough troops to send', 'nosend');
     else sfx('send');
   }
-  drag = null;
+  if (rallyDrag) {
+    const same = hover === rallyDrag.from;
+    if (rallyDrag.target !== null) {
+      setRally(game, 0, rallyDrag.from, rallyDrag.target);
+      toast(`Rally route set: ${game.map.nodes[rallyDrag.from].name} → ${game.map.nodes[rallyDrag.target].name}`, 'rally', true);
+    } else if (same && game.nodes[rallyDrag.from].rallyTo !== null) {
+      setRally(game, 0, rallyDrag.from, null);
+      toast('Rally route cleared', 'rally');
+    }
+  }
+  if (box) {
+    const moved = Math.hypot(box.x1 - box.x0, box.y1 - box.y0) > 6;
+    selected.clear();
+    if (moved) {
+      const [x0, x1] = [Math.min(box.x0, box.x1), Math.max(box.x0, box.x1)];
+      const [y0, y1] = [Math.min(box.y0, box.y1), Math.max(box.y0, box.y1)];
+      for (const n of game.map.nodes) {
+        const p = renderer.w2s(n.x, n.y);
+        if (game.nodes[n.id].owner === 0 && p.x >= x0 && p.x <= x1 && p.y >= y0 && p.y <= y1) selected.add(n.id);
+      }
+      if (selected.size > 1) toast(`${selected.size} strongholds selected: drag from any of them to send from all`, 'sel', true);
+    }
+  }
+  drag = rallyDrag = box = null;
 });
 canvas.addEventListener('mouseleave', () => {
   hover = null;
@@ -415,8 +522,16 @@ function updateTip(sx: number, sy: number) {
   const n = game.map.nodes[hover];
   const st = NODE_STATS[n.kind];
   const ns = game.nodes[hover];
-  const owner = ns.owner === 0 ? 'Yours' : ns.owner === 1 ? 'Enemy' : 'Neutral';
-  tip.innerHTML = `<b>${n.name}</b> · ${st.label}<br>${owner} · ${Math.floor(ns.troops)} troops${ns.owner !== 2 ? ` · +${st.growth}/s` : ''}<br>Walls ×${st.defense}${ns.battleId !== null ? '<br><i>Battle in progress: click to enter</i>' : ns.owner === 0 ? '<br><i>Drag to send troops</i>' : ''}`;
+  const known = knownNode(game, 0, hover);
+  const owner = known.owner === 0 ? 'Yours' : known.owner === 1 ? 'Enemy' : 'Neutral';
+  const troops = known.live ? `${Math.floor(ns.troops)} troops` : `about ${Math.floor(known.troops)} troops when last seen`;
+  const growth = st.growth * (n.special === 'barracks' ? 1.5 : 1);
+  const special = n.special ? `<br><b class="sp">${SPECIALS[n.special].label}:</b> ${SPECIALS[n.special].desc}` : '';
+  const roads = game.map.adj[hover].map((k) => game!.map.edges.find((e) => (e.a === hover && e.b === k) || (e.b === hover && e.a === k))!.road).filter((r) => r !== 'road');
+  const roadNote = roads.length ? `<br>Roads here: ${[...new Set(roads)].map((r) => `${r} (×${ROAD_SPEED[r]} speed)`).join(', ')}` : '';
+  const rally = ns.owner === 0 && ns.rallyTo !== null ? `<br>Rally route → ${game.map.nodes[ns.rallyTo].name} (right-click to clear)` : '';
+  const hint = ns.battleId !== null && known.live ? '<br><i>Battle in progress: click to enter</i>' : ns.owner === 0 ? '<br><i>Drag to send troops · right-drag to set a rally route</i>' : '';
+  tip.innerHTML = `<b>${n.name}</b> · ${st.label}<br>${owner} · ${troops}${known.owner !== 2 ? ` · +${growth}/s` : ''}<br>Walls ×${st.defense}${special}${roadNote}${rally}${hint}`;
   tip.style.left = `${sx + 18}px`;
   tip.style.top = `${sy + 18}px`;
   tip.classList.remove('hidden');
@@ -436,6 +551,19 @@ function setStance(s: Stance) {
 }
 document.querySelectorAll<HTMLElement>('#stance button').forEach((b) => b.addEventListener('click', () => setStance(b.dataset.s as Stance)));
 setStance('assault');
+document.querySelectorAll<HTMLElement>('#abilities button').forEach((b) =>
+  b.addEventListener('click', () => {
+    if (!game) return;
+    const a = b.dataset.a as Ability;
+    if (game.abilityReady[0][a] > game.time) return;
+    if (a === 'spy') {
+      if (useAbility(game, 0, 'spy')) sfx('horn');
+      return;
+    }
+    targeting = targeting === a ? null : a;
+    if (targeting) toast(a === 'march' ? 'Forced March: click one of your marching columns' : 'Inspire: click one of your battles', 'tgt');
+  }),
+);
 $('battle-list').addEventListener('click', (e) => {
   const id = (e.target as HTMLElement).closest<HTMLElement>('[data-bid]')?.dataset.bid;
   if (id) enterBattle(Number(id));
@@ -444,6 +572,11 @@ $('battle-list').addEventListener('click', (e) => {
 window.addEventListener('keydown', (e) => {
   if (!game || !$('setup').classList.contains('hidden')) return;
   if (e.key === 'Escape' && bv.open) return leaveBattle();
+  if (e.key === 'Escape' && (targeting || selected.size)) {
+    targeting = null;
+    selected.clear();
+    return;
+  }
   if (e.key === 'p' || e.key === 'P' || (e.key === 'Escape' && !bv.open)) return togglePause();
   if (['1', '2', '3', '4'].includes(e.key)) setRatio([0.25, 0.5, 0.75, 1][Number(e.key) - 1]);
   if (e.key === 'm' || e.key === 'M') setPref('muted', !prefs.muted);
@@ -497,9 +630,19 @@ function updateHud(g: Game) {
     t1 += Math.max(0, sideOf(b, 1)?.troops ?? 0);
   }
   $('t0').textContent = String(Math.floor(t0));
-  $('t1').textContent = String(Math.floor(t1));
+  // Under fog you only know what you have seen of the enemy.
+  const hidden = g.fog && g.spyUntil[0] <= g.time;
+  if (hidden) {
+    t1 = 0;
+    for (const n of g.nodes) {
+      const k = knownNode(g, 0, n.id);
+      if (k.owner === 1) t1 += k.troops;
+    }
+    for (const c of g.columns) if (c.owner === 1 && canSee(g, 0, columnPos(g, c).x, columnPos(g, c).y)) t1 += c.troops;
+  }
+  $('t1').textContent = hidden ? `~${Math.floor(t1)}` : String(Math.floor(t1));
   $('n0').textContent = `${g.nodes.filter((n) => n.owner === 0).length} held`;
-  $('n1').textContent = `${g.nodes.filter((n) => n.owner === 1).length} held`;
+  $('n1').textContent = `${g.nodes.filter((n) => (hidden ? knownNode(g, 0, n.id).owner : n.owner) === 1).length}${hidden ? '?' : ''} held`;
   $('p0').style.width = `${(100 * t0) / (t0 + t1 || 1)}%`;
   // War clock counts down; at zero, whoever holds more strongholds wins.
   const s = Math.max(0, Math.ceil(MATCH_TIME - g.time));
@@ -515,6 +658,13 @@ function updateHud(g: Game) {
     })
     .sort((p, q) => p.r - q.r);
   setIntensity(mine.length);
+  document.querySelectorAll<HTMLButtonElement>('#abilities button').forEach((b) => {
+    const a = b.dataset.a as Ability;
+    const wait = Math.ceil(g.abilityReady[0][a] - g.time);
+    b.disabled = wait > 0;
+    b.classList.toggle('on', targeting === a);
+    b.querySelector('small')!.textContent = wait > 0 ? ` ${wait}s` : a === 'spy' && g.spyUntil[0] > g.time ? ` ${Math.ceil(g.spyUntil[0] - g.time)}s` : '';
+  });
   $('battle-list').innerHTML = mine
     .map(
       ({ b, me, foe, r }) =>
@@ -526,6 +676,8 @@ function updateHud(g: Game) {
     const key = `${e.kind}:${e.t.toFixed(2)}:${e.text}`;
     if (seenEvents.has(key)) continue;
     seenEvents.add(key);
+    // Under fog, news only reaches you from places you can see.
+    if (g.fog && !canSee(g, 0, e.x, e.y)) continue;
     if (e.kind === 'battle' && e.owner === 1) {
       toast(`⚔ ${e.text}`, key);
       // A horn when the enemy hits one of your strongholds.
@@ -579,7 +731,11 @@ function tick(dt: number) {
     bv.update(game, dt);
   }
   if (bv.open) bv.render(game);
-  else renderer.draw(game, { hover, drag, now });
+  else {
+    const ui = { hover, drag, now, selected, box, rallyDrag, targeting };
+    renderer.draw(game, ui);
+    renderer.drawOverlay(ui);
+  }
   updateHud(game);
   if (game.winner !== null) {
     if (endShownAt < 0) endShownAt = now;

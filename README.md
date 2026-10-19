@@ -46,6 +46,25 @@ npm run build
   - **Visible kills:** soldiers drop out of the front ranks and tumble back as troops die.
   - **Map:** dust trails behind marching columns, a ring-and-flag burst when a stronghold changes hands, and a red flash at the screen edge when you lose one.
   - **Settings** (start screen or ⚙ in the HUD, remembered in the browser): volume and mute, quick-time speed (80/100/120%; timing only, effects unchanged), and team colours (red vs blue, or high-contrast orange vs blue).
+- **A map worth fighting over (Phase 3, 2026-10-19):**
+  - **Special strongholds** (gold badge; about two thirds of the mirrored pairs, plus the centre node):
+    - **Barracks:** +50% growth.
+    - **Watchtower:** vision 580 instead of 300.
+    - **Forge:** your battles at or next to it start with +0.3 momentum.
+    - **Shrine:** +25% quick-time power at or next to it.
+  - **Road types:** marsh ×0.65 speed (green dashes) and paved ×1.3 (pale stone). Specials and roads are always identical on both halves of the map.
+  - **Rally routes:** right-drag from one of your strongholds to another and it forwards its surplus (above 5, or 10 at a capital) every second. Right-click to clear. Routes clear themselves if either end is lost.
+  - **Multi-send:** drag a box around several strongholds, then drag from any of them to send the chosen share from all.
+  - **Orders** (dock, on cooldowns):
+    - **March:** click a column; it moves 2× faster for 15 s; 45 s cooldown.
+    - **Inspire:** click a battle; +0.6 momentum and +50% rally; 60 s cooldown.
+    - **Spy:** 20 s of full vision plus the destinations of enemy columns; 75 s cooldown.
+  - **Fog of war** (setup option, off by default):
+    - You see 300 around your strongholds (580 for a Watchtower), 220 around your columns and 200 around your battles.
+    - Out of view, nodes show your last sighting, dimmed and marked "?".
+    - Enemy columns, battles, alerts and the enemy totals in the HUD are hidden.
+    - The AI plays under the same rules: it estimates from what it has seen and reacts only to columns it can see.
+  - **AI:** values special strongholds, runs rally routes from its interior to the front, uses March on big attacks (Normal and Hard), Inspire on fights that are slipping away, and Spy under fog.
 - **Training** (start screen): pick any of the six events (including Duel and Pursuit), read the steps, **watch a demo** where a ghost cursor performs it, then **practise** it on repeat with hits, misses and a streak counter.
 - **Enemy commander:** the AI plays the same quick-time events, one battle at a time, with a switching delay and a success rate set by difficulty (easy 55%, normal 70%, hard 82%). It deliberately attacks where your commander is not.
 - **Winning:** take the enemy capital. A 12-minute war clock breaks deadlocks: at zero, whoever holds more strongholds wins, with total troops as the tiebreak.
@@ -67,7 +86,7 @@ Every player action is a plain function on the simulation: `sendTroops` (with st
 
 ## Verification (2026-10-18)
 
-- `npm test`: 26 passing. Phase 1 added tests for rally/finisher, retreat (attacker and defender), stances, rout and duel/pursuit, plus checks that both AIs use finishers and retreats in the 20-map sweep. Covers:
+- `npm test`: 34 passing (Phase 3 added `tests/phase3.test.ts`: symmetric specials and roads, barracks/forge/shrine effects, road and Forced March speeds, rally routes, ability cooldowns, fog visibility and memory, and AI wars finishing with fog on). Phase 1 added tests for rally/finisher, retreat (attacker and defender), stances, rout and duel/pursuit, plus checks that both AIs use finishers and retreats in the 20-map sweep. Covers:
   - map generation for every size (connected, symmetric, capitals at least 3 roads apart) and determinism
   - garrison growth and caps, capture, battle length, wall bonus and road interception
   - quick-time successes flipping a losing fight
