@@ -4,7 +4,7 @@ A small real-time strategy game about **where to spend your attention**. Two rea
 
 **Status: playable prototype** (single player vs AI, desktop browser, mouse). It's a complete game loop with a tutorial, training, five commanders, four AI rivals, fog of war and an AI-vs-AI watch mode. There's no campaign, online play, mobile support or license yet (see [Known limitations](#known-limitations)).
 
-**Play:** _live link added on deploy_
+**Play:** https://holdfast-umber.vercel.app (desktop browser, mouse). Every push to `main` redeploys it.
 
 ![The map: strongholds, roads, marching columns and a battle marker with both commanders' flags](docs/map.jpg)
 ![Inside a battle: the tutorial demonstrating a Volley quick-time event with a ghost cursor](docs/battle.jpg)
@@ -36,7 +36,7 @@ Other controls:
 npm install
 npm run dev     # http://127.0.0.1:5360
 npm test        # 44 tests: maps, battle maths, commanders, AI-vs-AI wars
-npm run build   # static site in dist/
+npm run build   # static site in dist/ (deployed on Vercel from `main`)
 ```
 
 It's a static site built with Vite, TypeScript and Canvas 2D. It has no backend or accounts, and makes no network calls besides loading Google Fonts. Preferences are kept in the browser's localStorage.
