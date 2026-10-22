@@ -1044,3 +1044,35 @@ button.primary.alt {
   color: #2a1408;
   border-color: #fff1c9;
 }
+
+/* ---------- Banked rally meter ---------- */
+.dock-rally {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 4px 8px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--muted);
+  white-space: nowrap;
+}
+.dock-rally .bar {
+  width: 76px;
+  height: 6px;
+  border-radius: 99px;
+  background: rgba(255, 255, 255, 0.08);
+  overflow: hidden;
+}
+.dock-rally .bar div {
+  height: 100%;
+  background: linear-gradient(90deg, #ffa94d, #ffd166);
+  transition: width 0.2s;
+}
+.dock-rally.full {
+  color: #ffd166;
+  border-color: #ffd166;
+  box-shadow: 0 0 16px rgba(255, 209, 102, 0.3);
+}

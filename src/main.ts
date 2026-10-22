@@ -101,6 +101,7 @@ app.innerHTML = `
     <div class="seg" id="stance">${(Object.keys(STANCES) as Stance[]).map((k) => `<button data-s="${k}" title="${STANCES[k].desc}">${STANCES[k].label}</button>`).join('')}</div>
     <span class="dock-lbl">Orders</span>
     <div class="seg" id="abilities">${(Object.keys(ABILITIES) as Ability[]).map((k) => `<button data-a="${k}" title="${ABILITIES[k].desc}">${ABILITIES[k].label}<small></small></button>`).join('')}</div>
+    <div class="dock-rally" id="dock-rally" title="Your rally meter. It stays with your commander between battles, so you can bank a full meter and spend the Charge where it matters."><span>Rally</span><div class="bar"><div id="dock-rally-fill"></div></div></div>
     <div class="battles" id="battle-list"></div>
   </div>
   <div class="spectator hidden" id="spectator">
@@ -156,7 +157,7 @@ app.innerHTML = `
           <p>Click a battle (the crossed swords) to <b>enter it</b>. Left alone, numbers decide it. Inside, quick-time events swing the fight, but the map is hidden and the war goes on without you.</p>
           <p>The enemy has a commander too, and it can only be in one battle. Its flag shows where it is: strike somewhere else, or go there and <b>duel</b> it.</p>
           <h3>Battle tools</h3>
-          <p><b>Rally &amp; Charge:</b> every hit fills your rally meter (4 hits). When full, click <b>CHARGE!</b> to cut down a quarter of the enemy.</p>
+          <p><b>Rally &amp; Charge:</b> every hit fills your rally meter (4 hits). When full, click <b>CHARGE!</b> to cut down a quarter of the enemy. The meter belongs to your commander, not the battle: it carries over, so you can bank a full meter for the fight that matters (shown in the dock).</p>
           <p><b>Retreat:</b> pull your troops back to the nearest stronghold you hold, keeping 85%. It pulses when your side is routing.</p>
           <p><b>Rout:</b> a side below a quarter of its peak breaks and takes 25% extra losses. Chase a routing enemy with <b>Pursuit</b>.</p>
           <p><b>Stances</b> (dock): Assault +20% damage, Hold −20% damage taken, Skirmish +25% march speed. Each brings more of one event type.</p>
@@ -782,6 +783,10 @@ function updateHud(g: Game) {
     })
     .sort((p, q) => p.r - q.r);
   setIntensity(mine.length);
+  // The rally meter is banked between battles.
+  $('dock-rally-fill').style.width = `${g.meter[0] * 100}%`;
+  $('dock-rally').classList.toggle('full', g.meter[0] >= 1);
+  $('dock-rally').querySelector('span')!.textContent = g.meter[0] >= 1 ? 'Charge ready' : 'Rally';
   document.querySelectorAll<HTMLButtonElement>('#abilities button').forEach((b) => {
     const a = b.dataset.a as Ability;
     const wait = Math.ceil(g.abilityReady[0][a] - g.time);

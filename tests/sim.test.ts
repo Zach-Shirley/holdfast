@@ -150,6 +150,21 @@ describe('phase 1: battle decisions', () => {
     expect(me.rally).toBe(0);
   });
 
+  it('the rally meter belongs to the commander: it carries over to the next battle', () => {
+    const { g, b, c0 } = battleGame(30, 30);
+    for (let i = 0; i < 4; i++) applyQte(g, b.id, 0, 'slash', true);
+    expect(g.meter[0]).toBe(1);
+    retreat(g, b.id, 0);
+    const other = g.map.adj[c0].find((k) => g.nodes[k].owner === 2 && g.nodes[k].battleId === null)!;
+    sendTroops(g, 0, c0, other, 30);
+    while (!g.battles.some((x) => x.endedAt === null)) step(g, 0.05);
+    const nb = g.battles.find((x) => x.endedAt === null)!;
+    expect(sideOf(nb, 0)!.rally).toBe(1);
+    expect(sideOf(nb, 2)!.rally).toBe(0);
+    expect(useFinisher(g, nb.id, 0)).toMatch(/CHARGE/);
+    expect(g.meter[0]).toBe(0);
+  });
+
   it('retreat pulls 85% of the troops back home and ends the attack', () => {
     const { g, b, target, c0 } = battleGame(20, 40);
     const before = sideOf(b, 0)!.troops;

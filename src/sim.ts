@@ -104,7 +104,7 @@ export interface Side {
   owner: Owner;
   troops: number;
   momentum: number;
-  /** Rally meter 0..1, filled by quick-time hits; full enables the finisher. */
+  /** Mirror of the commander's rally meter (Game.meter), 0..1; always 0 for neutrals. */
   rally: number;
   stance?: Stance;
   /** Road battles only: where this side was marching, so survivors can carry on. */
@@ -174,6 +174,11 @@ export interface Game {
   commanders: [CommanderId, CommanderId];
   /** No war clock (the tutorial). */
   noClock: boolean;
+  /**
+   * Each commander's rally meter, 0..1. It belongs to the commander, not the battle: it carries
+   * over between battles, so a full meter can be banked for the fight that matters.
+   */
+  meter: [number, number];
 }
 
 export interface GameOptions {
@@ -227,6 +232,7 @@ export function createGame(map: GraphMap, opts: GameOptions = {}): Game {
     visionTimer: 0,
     commanders: opts.commanders ?? ['none', 'none'],
     noClock: !!opts.noClock,
+    meter: [0, 0],
   };
 }
 
@@ -329,12 +335,22 @@ export function useAbility(g: Game, owner: Player, ability: Ability, target?: nu
     const me = b && sideOf(b, owner);
     if (!b || !me || b.endedAt !== null || me.troops <= 0.5) return false;
     me.momentum = Math.min(MOMENTUM_MAX, me.momentum + 0.6);
-    me.rally = Math.min(1, me.rally + 0.5);
+    addMeter(g, owner, 0.5);
   } else {
     g.spyUntil[owner] = g.time + ABILITIES.spy.duration;
   }
   g.abilityReady[owner][ability] = g.time + ABILITIES[ability].cooldown;
   return true;
+}
+
+/** Change a commander's rally meter and mirror it onto every battle side they have. */
+function addMeter(g: Game, owner: Player, d: number) {
+  g.meter[owner] = Math.max(0, Math.min(1, g.meter[owner] + d));
+  syncMeters(g);
+}
+
+function syncMeters(g: Game) {
+  for (const b of g.battles) for (const s of b.sides) s.rally = s.owner === 2 ? 0 : g.meter[s.owner];
 }
 
 export const activeBattles = (g: Game) => g.battles.filter((b) => b.endedAt === null);
@@ -563,7 +579,7 @@ function qteEffect(g: Game, battleId: number, owner: Player, kind: QteKind, succ
   if (success) g.stats[owner].qteHit++;
   if (!b || !me || b.endedAt !== null) return '';
   const cmd = commanderOf(g, owner);
-  me.rally = Math.max(0, Math.min(1, me.rally + (success ? RALLY_PER_HIT * (cmd === 'herald' ? 1.4 : 1) : -RALLY_PER_MISS)));
+  addMeter(g, owner, success ? RALLY_PER_HIT * (cmd === 'herald' ? 1.4 : 1) : -RALLY_PER_MISS);
   const shrine = specialNear(g, owner, battleNodes(b), 'shrine') ? SHRINE_POWER : 1;
   const kill = (frac: number) => killEnemies(b, owner, frac, QTE_POWER * shrine);
   const bump = (d: number) => bumpMomentum(me, d * shrine);
@@ -608,8 +624,8 @@ function bumpMomentum(s: Side, d: number) {
 export function useFinisher(g: Game, battleId: number, owner: Player): string {
   const b = getBattle(g, battleId);
   const me = b && sideOf(b, owner);
-  if (!b || !me || b.endedAt !== null || me.rally < 1) return '';
-  me.rally = 0;
+  if (!b || !me || b.endedAt !== null || g.meter[owner] < 1) return '';
+  addMeter(g, owner, -1);
   const k = killEnemies(b, owner, FINISHER_KILL, 1, 3);
   g.stats[owner].finishers++;
   event(g, { kind: 'finisher', text: owner === 0 ? 'Your charge breaks their line' : 'The enemy charges!', owner, x: b.x, y: b.y, battleId });
@@ -724,7 +740,7 @@ export function applyPursuit(g: Game, battleId: number, owner: Player, hits: num
   g.stats[owner].qtePlayed++;
   if (hits > 0) g.stats[owner].qteHit++;
   if (!b || !me || b.endedAt !== null || hits <= 0) return hits <= 0 ? 'They got away' : '';
-  me.rally = Math.min(1, me.rally + RALLY_PER_HIT);
+  addMeter(g, owner, RALLY_PER_HIT);
   const shrine = specialNear(g, owner, battleNodes(b), 'shrine') ? SHRINE_POWER : 1;
   // Each caught runner is worth more when the enemy is truly routing.
   const per = b.sides.some((x) => x.owner !== owner && isRouting(b, x)) ? 0.05 : 0.035;
@@ -861,5 +877,7 @@ export function step(g: Game, dt: number) {
       }
     }
   }
+  // New battle sides start with their commander's banked meter.
+  syncMeters(g);
   g.events = g.events.filter((e) => g.time - e.t < 8);
 }

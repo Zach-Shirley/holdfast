@@ -104,7 +104,7 @@ const STEPS: Step[] = [
   },
   {
     title: 'Charge!',
-    text: () => 'Your rally meter is full: click <b>CHARGE!</b> at the bottom to cut down a quarter of the enemy at once. The meter fills from hits, so stay focused.',
+    text: () => 'Your rally meter is full: click <b>CHARGE!</b> at the bottom to cut down a quarter of the enemy at once. The meter belongs to your commander, not this battle: if you leave, it comes with you, so later you can save a full meter for a fight that matters.',
     done: (g, v) => g.stats[0].finishers > 0 || !activeBattles(g).some((x) => x.id === v.bvBattleId && (sideOf(x, 0)?.rally ?? 0) >= 1),
   },
   {
