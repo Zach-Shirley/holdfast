@@ -2,10 +2,10 @@ import { NODE_STATS } from './map';
 import { OWNER_COLOR, OWNER_DARK, OWNER_LIGHT } from './render';
 import { gauntletBest, mastery, recordEvent, saveGauntlet } from './records';
 import { setBattleAmbience, sfx, spearWhoosh, volleyTone, type Voice } from './sound';
-import { STANCES, activeBattles, battleName, battleNodes, canSee, pursuitReady, getBattle, inDuel, isRouting, sideDefense, sideOf, siegeRole, specialNear, type Battle, type Game, type Owner, type QteKind } from './sim';
+import { STANCES, activeBattles, battleName, battleNodes, canSee, pursuitReady, getBattle, inDuel, isRouting, sideDefense, sideOf, siegeRole, specialNear, commanderOf, type Battle, type Game, type Owner, type QteKind } from './sim';
 
 /** Everything the battle view can throw at you: the four basics plus situational events. */
-export type ViewKind = QteKind | 'duel' | 'pursuit';
+export type ViewKind = QteKind | 'duel' | 'pursuit' | 'arrows';
 /** Duel: wait for the signal, then click faster than the enemy commander. */
 const DUEL_TARGET_R = 70;
 const DUEL_EVERY = 6;
@@ -39,6 +39,13 @@ const OIL_TIME = 2.8;
 const OIL_NEED = 0.22;
 const OIL_TOL = 46;
 const OIL_REACH = 30;
+/** Shield Wall: hold, then release while the gauge is in the gold zone. */
+const SHIELD_FILL = 1.15;
+const SHIELD_LIMIT = 3;
+const SHIELD_R = 70;
+/** Arrow Storm: three arrows fall toward your line; click each before it lands. */
+const ARROW_FALL = 1.25;
+const ARROW_R = 34;
 const GAP = 0.45;
 const FIRST = 0.8;
 
@@ -49,6 +56,8 @@ type Qte =
   | { kind: 'banner'; t: number; held: number; phase: number }
   | { kind: 'duel'; t: number; fireAt: number; enemy: number; x: number; y: number }
   | { kind: 'pursuit'; t: number; runners: { x: number; y: number; vx: number; vy: number; hit: boolean }[] }
+  | { kind: 'shield'; t: number; x: number; y: number; zone: [number, number]; pressAt: number | null }
+  | { kind: 'arrows'; t: number; ground: number; arrows: { x: number; at: number; hit: boolean; landed: boolean }[] }
   | { kind: 'ram'; t: number; x: number; y: number; next: number; struck: number }
   | { kind: 'oil'; t: number; y: number; x0: number; x1: number; ladders: { x: number; oil: number }[]; drops: { x: number; y: number; t: number }[] };
 
@@ -120,6 +129,28 @@ export const DRILLS: Record<ViewKind, { name: string; color: string; steps: stri
     effect: 'Winner kills about 15% of the loser (plus 3) and gains big momentum; the loser reels.',
     tip: 'Keep your cursor near the centre while waiting. On Normal the enemy reacts in about half a second.',
   },
+  shield: {
+    name: 'Shield Wall',
+    color: '#8fd0ff',
+    steps: [
+      'Comes up when you hold your ground (Hold stance) or are outnumbered.',
+      'Press and hold anywhere on the shield: a gauge fills around it.',
+      'Let go while the gauge is inside the gold zone. Too early, too late or never is a miss.',
+    ],
+    effect: 'For 6 seconds your side takes 45% fewer losses. A miss costs nothing.',
+    tip: 'The zone moves each time. Watch the gauge, not the shield.',
+  },
+  arrows: {
+    name: 'Arrow Storm',
+    color: '#c9f27a',
+    steps: [
+      "Comes up when the enemy's archers can reach you (often against the Archer commander).",
+      'Three arrows fall toward your line, one after another.',
+      'Click each arrow before it lands. Every arrow that lands costs troops.',
+    ],
+    effect: 'Each landed arrow kills about 2.5% of your troops. Stop all three and your line steadies (momentum, rally).',
+    tip: 'Go for them in the order they fall: the first one is already closest.',
+  },
   ram: {
     name: 'Battering Ram',
     color: '#d9a066',
@@ -163,6 +194,8 @@ export const SHORT: Record<ViewKind, string> = {
   banner: 'Hold the mouse button down on the banner until its ring fills.',
   duel: 'The enemy commander is here. Wait for the NOW! signal, then click it first. Clicking early loses.',
   pursuit: 'The enemy is fleeing. Click the runners before they escape.',
+  shield: 'Hold the button on the shield and let go while the gauge is in the gold zone.',
+  arrows: 'Click each falling arrow before it lands on your line.',
   ram: 'Click the gate each time the closing ring touches it: three beats in rhythm.',
   oil: 'Hold the button on the wall and sweep over every ladder until each is scalded.',
 };
@@ -191,6 +224,7 @@ export interface BattleViewHooks {
   canRetreat: (battleId: number) => boolean;
   onDuel: (battleId: number, won: boolean) => string;
   onPursuit: (battleId: number, hits: number) => string;
+  onArrows: (battleId: number, caught: number) => string;
   /** Seconds the enemy commander takes to react in a duel. */
   duelReaction: () => number;
   onLeave: () => void;
@@ -541,9 +575,16 @@ export class BattleView {
     const stance = sideOf(b, 0)?.stance;
     const favoured: QteKind | null = stance === 'assault' ? 'slash' : stance === 'hold' ? 'parry' : stance === 'skirmish' ? 'volley' : null;
     const role = siegeRole(g, b, 0);
-    const siege: QteKind[] = role === 'attacker' ? ['ram'] : role === 'defender' ? ['oil'] : [];
-    const pool = (['volley', 'parry', 'slash', 'banner', ...siege] as QteKind[]).filter((k) => k !== this.last);
-    const weights = pool.map((k) => (k === favoured ? 2.5 : k === 'ram' || k === 'oil' ? 1.6 : 1));
+    const extra: ViewKind[] = role === 'attacker' ? ['ram'] : role === 'defender' ? ['oil'] : [];
+    const me = sideOf(b, 0);
+    const foeTroops = foes.reduce((t, f) => t + f.troops, 0);
+    if (me && (me.stance === 'hold' || me.troops < foeTroops)) extra.push('shield');
+    // Enemy archers: often against the Archer commander, sometimes against any commanded army.
+    const archer = foes.some((f) => f.owner !== 2 && commanderOf(g, f.owner) === 'archer');
+    const commanded = foes.some((f) => f.owner !== 2);
+    if (archer || commanded) extra.push('arrows');
+    const pool = (['volley', 'parry', 'slash', 'banner', ...extra] as ViewKind[]).filter((k) => k !== this.last);
+    const weights = pool.map((k) => (k === favoured ? 2.5 : k === 'ram' || k === 'oil' ? 1.6 : k === 'shield' ? (me?.stance === 'hold' ? 1.4 : 0.8) : k === 'arrows' ? (archer ? 1.5 : 0.4) : 1));
     let r = Math.random() * weights.reduce((p, q) => p + q, 0);
     for (let i = 0; i < pool.length; i++) if ((r -= weights[i]) <= 0) return pool[i];
     return pool[0];
@@ -595,7 +636,21 @@ export class BattleView {
       this.voice = spearWhoosh(PARRY_TIME / (this.timeScale * this.speedMul));
     }
     else if (kind === 'banner') this.qte = { kind, t: 0, held: 0, phase: Math.random() * 10 };
-    else if (kind === 'ram') {
+    else if (kind === 'shield') {
+      const c = this.center();
+      const start = 0.5 + Math.random() * 0.25;
+      this.qte = { kind, t: 0, x: c.x, y: c.y, zone: [start, start + 0.17], pressAt: null };
+    } else if (kind === 'arrows') {
+      const a = this.area();
+      const xs = [0.2, 0.5, 0.8].map((f) => a.x0 + (a.x1 - a.x0) * (f + (Math.random() - 0.5) * 0.12));
+      // Shuffle the order they fall in (Fisher-Yates on the delays).
+      const at = [0, 0.38, 0.76];
+      for (let i = at.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [at[i], at[j]] = [at[j], at[i]];
+      }
+      this.qte = { kind, t: 0, ground: a.y1 - 20, arrows: xs.map((x, i) => ({ x, at: at[i], hit: false, landed: false })) };
+    } else if (kind === 'ram') {
       const c = this.center();
       this.qte = { kind, t: 0, x: c.x - 60 + (Math.random() - 0.5) * 80, y: c.y + 10, next: 0, struck: -9 };
     } else if (kind === 'oil') {
@@ -627,14 +682,14 @@ export class BattleView {
     } else if (kind === 'parry') sfx('parried');
     else if (kind !== 'pursuit') sfx('hit');
     if (this.lesson) {
-      this.floaters.push({ text: kind === 'pursuit' ? `${hits} / 3 caught` : success ? 'Like that!' : 'Miss', x, y, t: 0, good: success });
+      this.floaters.push({ text: kind === 'pursuit' || kind === 'arrows' ? `${hits} / 3 caught` : success ? 'Like that!' : 'Miss', x, y, t: 0, good: success });
     } else if (this.gauntlet) {
       const gt = this.gauntlet;
-      const ok = kind === 'pursuit' ? hits >= 2 : success;
+      const ok = kind === 'pursuit' || kind === 'arrows' ? hits >= 2 : success;
       if (ok) {
         gt.hits++;
         gt.streak++;
-        const pts = Math.round(100 * gt.speed * (kind === 'pursuit' ? hits / 3 : 1)) + 10 * Math.min(gt.streak, 20);
+        const pts = Math.round(100 * gt.speed * (kind === 'pursuit' || kind === 'arrows' ? hits / 3 : 1)) + 10 * Math.min(gt.streak, 20);
         gt.score += pts;
         gt.speed = Math.min(2.4, 1 + 0.05 * gt.hits);
         this.floaters.push({ text: `+${pts}`, x, y, t: 0, good: true });
@@ -656,19 +711,19 @@ export class BattleView {
         this.pstats[success ? 'hit' : 'miss']++;
         this.pstats.streak = success ? this.pstats.streak + 1 : 0;
       }
-      const label = kind === 'duel' ? (success ? 'Duel won!' : 'Duel lost') : kind === 'pursuit' ? `${hits} / 3 caught` : success ? 'Hit!' : 'Miss';
+      const label = kind === 'duel' ? (success ? 'Duel won!' : 'Duel lost') : kind === 'pursuit' || kind === 'arrows' ? `${hits} / 3 caught` : success ? 'Hit!' : 'Miss';
       this.floaters.push({ text: label, x, y, t: 0, good: success });
       this.renderPracticePanel();
     } else {
       if (this.battleId === null) return;
       const text =
-        kind === 'duel' ? this.hooks.onDuel(this.battleId, success) : kind === 'pursuit' ? this.hooks.onPursuit(this.battleId, hits) : this.hooks.onQte(this.battleId, kind, success);
+        kind === 'duel' ? this.hooks.onDuel(this.battleId, success) : kind === 'pursuit' ? this.hooks.onPursuit(this.battleId, hits) : kind === 'arrows' ? this.hooks.onArrows(this.battleId, hits) : this.hooks.onQte(this.battleId, kind, success);
       this.floaters.push({ text: text || (success ? 'Hit' : 'Miss'), x, y, t: 0, good: success });
       if (kind === 'duel') this.flash = 0.3;
     }
     if (!success && reason) this.floaters.push({ text: reason, x, y: y + 34, t: 0, good: false, small: true });
     // Mastery records count real attempts: battles, Training and the Gauntlet (never demos).
-    if (!this.demo && !this.lesson && !this.spectating) recordEvent(kind, kind === 'pursuit' ? hits >= 2 : success);
+    if (!this.demo && !this.lesson && !this.spectating) recordEvent(kind, kind === 'pursuit' || kind === 'arrows' ? hits >= 2 : success);
     if (!success && kind === 'parry') this.shake = 0.35;
     this.qte = null;
     this.gap = this.practice || this.lesson ? 0.7 : GAP;
@@ -686,6 +741,20 @@ export class BattleView {
     const D = Math.min(this.w, this.h) * 0.42;
     const d = D * (1 - q.t / PARRY_TIME) + 46;
     return { x: c.x + Math.cos(q.ang) * d, y: c.y + Math.sin(q.ang) * d };
+  }
+
+  /** Height of a falling arrow: it appears at the top of the play area and lands on the ground line. */
+  private arrowY(q: Extract<Qte, { kind: 'arrows' }>, r: { at: number }) {
+    const top = this.area().y0;
+    return top + (q.ground - top) * Math.max(0, Math.min(1, (q.t - r.at) / ARROW_FALL));
+  }
+
+  /** Arrow Storm ends once every arrow is either caught or landed. */
+  private finishArrows(q: Extract<Qte, { kind: 'arrows' }>) {
+    if (!q.arrows.every((r) => r.hit || r.landed)) return;
+    const caught = q.arrows.filter((r) => r.hit).length;
+    const c = this.center();
+    this.resolve(caught === 3, c.x, q.ground - 40, caught === 3 ? undefined : 'Click each arrow before it lands', caught);
   }
 
   private bannerPos(q: Extract<Qte, { kind: 'banner' }>) {
@@ -719,6 +788,16 @@ export class BattleView {
     } else if (q.kind === 'banner') {
       const p = this.bannerPos(q);
       if (Math.hypot(x - p.x, y - p.y) > BANNER_R) this.hint('Hold the button down on the banner');
+    } else if (q.kind === 'shield') {
+      if (Math.hypot(x - q.x, y - q.y) > SHIELD_R + 30) return this.hint('Press on the shield');
+      if (q.pressAt === null) q.pressAt = q.t;
+    } else if (q.kind === 'arrows') {
+      const hit = q.arrows.find((r) => !r.hit && !r.landed && q.t >= r.at && Math.hypot(x - r.x, y - this.arrowY(q, r)) <= ARROW_R + 10);
+      if (!hit) return this.hint('Click the falling arrows');
+      hit.hit = true;
+      sfx('catch');
+      this.clicks.push({ x: hit.x, y: this.arrowY(q, hit), t: 0 });
+      this.finishArrows(q);
     } else if (q.kind === 'ram') {
       if (Math.abs(x - q.x) > RAM_GATE_W / 2 + 30 || Math.abs(y - q.y) > RAM_GATE_H / 2 + 30) return this.hint('Click the gate');
       const beat = RAM_FIRST + q.next * RAM_BEAT;
@@ -764,6 +843,11 @@ export class BattleView {
   private release() {
     const q = this.qte;
     if (q && q.kind === 'slash' && q.grabbed) this.resolve(false, this.mouse.x, this.mouse.y, 'Let go too early: keep holding until the ring');
+    if (q && q.kind === 'shield' && q.pressAt !== null) {
+      const fill = (q.t - q.pressAt) / SHIELD_FILL;
+      if (fill >= q.zone[0] && fill <= q.zone[1]) this.resolve(true, q.x, q.y);
+      else this.resolve(false, q.x, q.y, fill < q.zone[0] ? 'Too early: let go inside the gold zone' : 'Too late: let go inside the gold zone');
+    }
   }
 
   update(g: Game | null, dt: number) {
@@ -845,7 +929,17 @@ export class BattleView {
       const c = this.center();
       this.resolve(false, c.x, c.y, 'Too slow: click the spear before it hits your shield');
     } else if (q.kind === 'slash' && q.t >= SLASH_TIME) this.resolve(false, q.bx, q.by, 'Too slow: press the dot, then drag to the ring');
-    else if (q.kind === 'ram' && q.t > RAM_FIRST + q.next * RAM_BEAT + RAM_WINDOW) this.resolve(false, q.x, q.y, q.next ? 'Lost the rhythm: keep striking on the beat' : 'Missed the beat: click the gate as the ring meets it');
+    else if (q.kind === 'shield' && q.pressAt !== null && (q.t - q.pressAt) / SHIELD_FILL > q.zone[1] + 0.12) this.resolve(false, q.x, q.y, 'Held too long: let go inside the gold zone');
+    else if (q.kind === 'shield' && q.pressAt === null && q.t > SHIELD_LIMIT) this.resolve(false, q.x, q.y, 'Press and hold on the shield');
+    else if (q.kind === 'arrows') {
+      for (const r of q.arrows) {
+        if (r.hit || r.landed || q.t < r.at + ARROW_FALL) continue;
+        r.landed = true;
+        this.shake = 0.2;
+        sfx('miss');
+      }
+      this.finishArrows(q);
+    } else if (q.kind === 'ram' && q.t > RAM_FIRST + q.next * RAM_BEAT + RAM_WINDOW) this.resolve(false, q.x, q.y, q.next ? 'Lost the rhythm: keep striking on the beat' : 'Missed the beat: click the gate as the ring meets it');
     else if (q.kind === 'oil') {
       const pouring = this.mouse.down && Math.abs(this.mouse.y - q.y) <= OIL_TOL && this.mouse.x >= q.x0 - 20 && this.mouse.x <= q.x1 + 20;
       if (pouring) {
@@ -925,6 +1019,26 @@ export class BattleView {
       if (q.t > 0.35 && !this.mouse.down) {
         this.mouse.down = true;
         this.clicks.push({ x: this.mouse.x, y: this.mouse.y, t: 0 });
+      }
+    } else if (q.kind === 'shield') {
+      glide(q.x, q.y, 10);
+      if (q.pressAt === null && q.t > 0.3) {
+        this.mouse.down = true;
+        this.clicks.push({ x: q.x, y: q.y, t: 0 });
+        this.press();
+      } else if (q.pressAt !== null && (q.t - q.pressAt) / SHIELD_FILL >= (q.zone[0] + q.zone[1]) / 2) {
+        this.mouse.down = false;
+        this.release();
+      }
+    } else if (q.kind === 'arrows') {
+      // Catch the arrow closest to landing.
+      const live = q.arrows.filter((r) => !r.hit && !r.landed && q.t >= r.at).sort((a, b) => a.at - b.at)[0];
+      if (!live) return;
+      const ay = this.arrowY(q, live);
+      glide(live.x, ay, 16);
+      if (Math.hypot(this.mouse.x - live.x, this.mouse.y - ay) < 14) {
+        click(live.x, ay);
+        this.press();
       }
     } else if (q.kind === 'ram') {
       glide(q.x, q.y, 10);
@@ -1348,6 +1462,95 @@ export class BattleView {
         ctx.fillStyle = '#fff';
         ctx.fillText('NOW!', q.x, q.y + 16);
       }
+    } else if (q.kind === 'shield') {
+      const fill = q.pressAt === null ? 0 : (q.t - q.pressAt) / SHIELD_FILL;
+      const R = SHIELD_R + 26;
+      const a0 = -Math.PI / 2;
+      // Gauge track, gold zone, and the fill so far.
+      ctx.lineWidth = 14;
+      ctx.strokeStyle = 'rgba(255,255,255,0.1)';
+      ctx.beginPath();
+      ctx.arc(q.x, q.y, R, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.strokeStyle = '#ffd166';
+      ctx.beginPath();
+      ctx.arc(q.x, q.y, R, a0 + q.zone[0] * Math.PI * 2, a0 + q.zone[1] * Math.PI * 2);
+      ctx.stroke();
+      const inZone = fill >= q.zone[0] && fill <= q.zone[1];
+      ctx.strokeStyle = inZone ? '#ffffff' : '#8fd0ff';
+      ctx.lineWidth = 6;
+      ctx.beginPath();
+      ctx.arc(q.x, q.y, R, a0, a0 + Math.min(1.2, fill) * Math.PI * 2);
+      ctx.stroke();
+      // The shield.
+      ctx.fillStyle = inZone ? '#2c5a7a' : '#1d3346';
+      ctx.strokeStyle = '#8fd0ff';
+      ctx.lineWidth = 4;
+      ctx.beginPath();
+      ctx.moveTo(q.x, q.y - SHIELD_R * 0.85);
+      ctx.quadraticCurveTo(q.x + SHIELD_R * 0.85, q.y - SHIELD_R * 0.7, q.x + SHIELD_R * 0.7, q.y);
+      ctx.quadraticCurveTo(q.x + SHIELD_R * 0.5, q.y + SHIELD_R * 0.7, q.x, q.y + SHIELD_R * 0.9);
+      ctx.quadraticCurveTo(q.x - SHIELD_R * 0.5, q.y + SHIELD_R * 0.7, q.x - SHIELD_R * 0.7, q.y);
+      ctx.quadraticCurveTo(q.x - SHIELD_R * 0.85, q.y - SHIELD_R * 0.7, q.x, q.y - SHIELD_R * 0.85);
+      ctx.fill();
+      ctx.stroke();
+      this.label(q.pressAt === null ? 'SHIELD WALL · press and hold on the shield' : 'SHIELD WALL · let go in the gold zone', q.x, q.y + R + 34);
+    } else if (q.kind === 'arrows') {
+      const a = this.area();
+      // Your line along the ground.
+      ctx.strokeStyle = 'rgba(255,138,152,0.5)';
+      ctx.lineWidth = 3;
+      ctx.setLineDash([10, 8]);
+      ctx.beginPath();
+      ctx.moveTo(a.x0, q.ground);
+      ctx.lineTo(a.x1, q.ground);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      for (const r of q.arrows) {
+        if (r.hit || q.t < r.at - 0.25) continue;
+        const y = this.arrowY(q, r);
+        if (r.landed) {
+          ctx.strokeStyle = 'rgba(201,242,122,0.4)';
+          ctx.lineWidth = 3;
+          ctx.beginPath();
+          ctx.moveTo(r.x, q.ground);
+          ctx.lineTo(r.x, q.ground - 26);
+          ctx.stroke();
+          continue;
+        }
+        if (q.t < r.at) {
+          // A warning mark where it will appear.
+          ctx.fillStyle = 'rgba(201,242,122,0.35)';
+          ctx.beginPath();
+          ctx.arc(r.x, a.y0, 8, 0, Math.PI * 2);
+          ctx.fill();
+          continue;
+        }
+        ctx.fillStyle = 'rgba(201,242,122,0.14)';
+        ctx.beginPath();
+        ctx.arc(r.x, y, ARROW_R, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.strokeStyle = '#c9f27a';
+        ctx.lineWidth = 3;
+        ctx.stroke();
+        // Arrow pointing down.
+        ctx.strokeStyle = '#f2ead8';
+        ctx.lineWidth = 3;
+        ctx.beginPath();
+        ctx.moveTo(r.x, y - 26);
+        ctx.lineTo(r.x, y + 14);
+        ctx.moveTo(r.x - 8, y + 4);
+        ctx.lineTo(r.x, y + 16);
+        ctx.lineTo(r.x + 8, y + 4);
+        ctx.stroke();
+        ctx.strokeStyle = '#c9f27a';
+        ctx.beginPath();
+        ctx.moveTo(r.x - 6, y - 26);
+        ctx.lineTo(r.x, y - 18);
+        ctx.lineTo(r.x + 6, y - 26);
+        ctx.stroke();
+      }
+      this.label(`ARROW STORM · click the arrows before they land (${q.arrows.filter((r) => r.hit).length}/3)`, (a.x0 + a.x1) / 2, q.ground + 30);
     } else if (q.kind === 'ram') {
       const gx = q.x - RAM_GATE_W / 2;
       const gy = q.y - RAM_GATE_H / 2;

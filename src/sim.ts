@@ -20,12 +20,17 @@ export const MOMENTUM_DECAY = 0.06;
 /** War clock: when it runs out, whoever holds more strongholds wins (troops break ties). */
 export const MATCH_TIME = 720;
 
-export type QteKind = 'volley' | 'parry' | 'slash' | 'banner' | 'ram' | 'oil';
+export type QteKind = 'volley' | 'parry' | 'slash' | 'banner' | 'ram' | 'oil' | 'shield';
 /** Siege events: the Ram for attackers of a walled stronghold, Boiling Oil for its defenders. */
 export const SIEGE_KINDS: QteKind[] = ['ram', 'oil'];
 /** A breached gate lowers the walls by this much, for this long. */
 export const BREACH = 0.3;
 export const BREACH_TIME = 15;
+/** Shield Wall: for a few seconds your side takes this share of its usual losses. */
+export const SHIELD_TAKEN = 0.55;
+export const SHIELD_TIME = 6;
+/** Arrow Storm: each arrow that lands costs this share of your troops (plus half a soldier). */
+export const ARROW_LOSS = 0.025;
 
 /** How a column fights. Chosen when sending troops; garrisons have no stance. */
 export type Stance = 'assault' | 'hold' | 'skirmish';
@@ -112,6 +117,8 @@ export interface Side {
   /** Mirror of the commander's rally meter (Game.meter), 0..1; always 0 for neutrals. */
   rally: number;
   stance?: Stance;
+  /** Shield Wall: this side takes reduced losses until this time. */
+  guardUntil?: number;
   /** Road battles only: where this side was marching, so survivors can carry on. */
   march?: { from: number; path: number[]; progress: number; edgeLen: number };
 }
@@ -409,7 +416,8 @@ export function lossRates(g: Game, b: Battle): Map<Owner, number> {
     const out = (BASE_LOSS + PER_TROOP_LOSS * o.troops) * o.momentum * sideDefense(g, b, o) * stanceOut;
     // Spread this side's damage over its enemies by size.
     for (const e of enemies) {
-      const taken = (e.stance ? STANCES[e.stance].dmgIn : 1) * (isRouting(b, e) ? ROUT_DAMAGE : 1);
+      const guard = (e.guardUntil ?? -1) > g.time ? SHIELD_TAKEN : 1;
+      const taken = (e.stance ? STANCES[e.stance].dmgIn : 1) * (isRouting(b, e) ? ROUT_DAMAGE : 1) * guard;
       rates.set(e.owner, rates.get(e.owner)! + ((out * e.troops) / enemyTotal) * taken);
     }
   }
@@ -623,6 +631,10 @@ function qteEffect(g: Game, battleId: number, owner: Player, kind: QteKind, succ
       if (!success) return 'The oil missed the ladders';
       bump(0.05 * QTE_POWER);
       return `Boiling oil! ${kill(0.08)} scalded`;
+    case 'shield':
+      if (!success) return 'The shield wall broke';
+      me.guardUntil = g.time + SHIELD_TIME;
+      return `Shield wall! Losses cut for ${SHIELD_TIME} s`;
     case 'banner':
       if (!success) return 'Banner lost';
       bump(0.15 * QTE_POWER);
@@ -776,6 +788,29 @@ export function applyPursuit(g: Game, battleId: number, owner: Player, hits: num
   // Each caught runner is worth more when the enemy is truly routing.
   const per = b.sides.some((x) => x.owner !== owner && isRouting(b, x)) ? 0.05 : 0.035;
   const text = `Pursuit: ${killEnemies(b, owner, per * hits, QTE_POWER * shrine)} cut down`;
+  logQte(g, b, owner, text);
+  return text;
+}
+
+/**
+ * Arrow Storm: enemy archers loose three arrows at `owner`'s line; `caught` of them are struck down
+ * in the air. Every arrow that lands costs troops; catching all three steadies the line.
+ */
+export function applyArrows(g: Game, battleId: number, owner: Player, caught: number): string {
+  const b = getBattle(g, battleId);
+  const me = b && sideOf(b, owner);
+  g.stats[owner].qtePlayed++;
+  if (caught >= 2) g.stats[owner].qteHit++;
+  if (!b || !me || b.endedAt !== null) return '';
+  const landed = 3 - caught;
+  const lost = Math.min(me.troops, landed * (me.troops * ARROW_LOSS + 0.5));
+  me.troops -= lost;
+  let text: string;
+  if (landed === 0) {
+    bumpMomentum(me, 0.06 * QTE_POWER);
+    addMeter(g, owner, RALLY_PER_HIT);
+    text = 'Arrow storm turned aside';
+  } else text = `${landed} arrow${landed > 1 ? 's' : ''} landed: −${Math.round(lost)}`;
   logQte(g, b, owner, text);
   return text;
 }

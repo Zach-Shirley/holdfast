@@ -24,6 +24,7 @@ import {
   activeBattles,
   applyDuel,
   applyPursuit,
+  applyArrows,
   applyQte,
   battleName,
   createGame,
@@ -263,6 +264,7 @@ const bv = new BattleView($('bv'), {
   },
   onDuel: (id, won) => (game ? applyDuel(game, id, won ? 0 : 1) : ''),
   onPursuit: (id, hits) => (game ? applyPursuit(game, id, 0, hits) : ''),
+  onArrows: (id, caught) => (game ? applyArrows(game, id, 0, caught) : ''),
   duelReaction: () => (ai ? duelReaction(ai) : 0.5),
   onPracticeExit: () => $("setup").classList.remove("hidden"),
 });

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { generateMap } from '../src/map';
-import { BREACH, BREACH_TIME, applyQte, createGame, sendTroops, sideDefense, sideOf, siegeRole, step } from '../src/sim';
+import { ARROW_LOSS, BREACH, BREACH_TIME, SHIELD_TAKEN, SHIELD_TIME, applyArrows, applyQte, createGame, lossRates, sendTroops, sideDefense, sideOf, siegeRole, step } from '../src/sim';
 
 /** A battle at a neutral fort next to the player's capital. */
 function fortBattle() {
@@ -44,5 +44,26 @@ describe('siege events', () => {
     expect(sideOf(b, 0)!.troops).toBe(before);
     applyQte(g, b.id, 1, 'oil', true);
     expect(sideOf(b, 0)!.troops).toBeLessThan(before * 0.85);
+  });
+});
+
+describe('Shield Wall and Arrow Storm', () => {
+  it('a Shield Wall cuts the losses your side takes for a few seconds', () => {
+    const { g, b } = fortBattle();
+    const before = lossRates(g, b).get(0)!;
+    applyQte(g, b.id, 0, 'shield', true);
+    expect(lossRates(g, b).get(0)!).toBeCloseTo(before * SHIELD_TAKEN, 5);
+    for (let t = 0; t < SHIELD_TIME + 0.2 && b.endedAt === null; t += 0.05) step(g, 0.05);
+    if (b.endedAt === null) expect(sideOf(b, 0)!.guardUntil!).toBeLessThan(g.time);
+  });
+
+  it('every arrow that lands costs troops; stopping all three costs nothing', () => {
+    const { g, b } = fortBattle();
+    const me = sideOf(b, 0)!;
+    const t0 = me.troops;
+    applyArrows(g, b.id, 0, 3);
+    expect(me.troops).toBe(t0);
+    applyArrows(g, b.id, 0, 0);
+    expect(me.troops).toBeCloseTo(t0 - 3 * (t0 * ARROW_LOSS + 0.5), 5);
   });
 });

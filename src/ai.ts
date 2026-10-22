@@ -10,6 +10,8 @@ import {
   MATCH_TIME,
   activeBattles,
   applyPursuit,
+  applyArrows,
+  commanderOf,
   applyQte,
   pursuitReady,
   event,
@@ -474,12 +476,21 @@ function commander(g: Game, ai: AiState, dt: number) {
     const b = getBattle(g, g.presence[me]);
     // At walls, the siege event for its role joins the pool (as it does for the player).
     const role = b ? siegeRole(g, b, me) : null;
-    const pool = role ? [...QTE_KINDS, role === 'attacker' ? 'ram' : 'oil'] as QteKind[] : QTE_KINDS;
+    const pool: QteKind[] = [...QTE_KINDS];
+    if (role) pool.push(role === 'attacker' ? 'ram' : 'oil');
+    // Shield Wall for a side holding its ground or outnumbered (as for the player).
+    const mine = b ? sideOf(b, me) : undefined;
+    const enemies = b ? b.sides.filter((x) => x.owner !== me).reduce((t, x) => t + Math.max(0, x.troops), 0) : 0;
+    if (mine && (mine.stance === 'hold' || mine.troops < enemies)) pool.push('shield');
     const kind = pool[Math.floor(ai.rng() * pool.length)];
+    // The player's archers loose arrow storms at the AI's line when the Archer leads them.
+    const archersFacing = b && b.sides.some((x) => x.owner !== me && x.owner !== 2 && commanderOf(g, x.owner) === 'archer');
     // Pursuits come up when the enemy is beaten down, for the AI as for the player.
     if (b && pursuitReady(b, me) && ai.rng() < 0.4) {
       const hits = [0, 1, 2].filter(() => ai.rng() < L.success).length;
       applyPursuit(g, b.id, me, hits);
+    } else if (b && archersFacing && ai.rng() < 0.15) {
+      applyArrows(g, b.id, me, [0, 1, 2].filter(() => ai.rng() < L.success).length);
     } else applyQte(g, g.presence[me]!, me, kind, ai.rng() < L.success);
     if (b && (sideOf(b, me)?.rally ?? 0) >= 1) useFinisher(g, b.id, me);
     // Inspire a close fight that is slipping away.
