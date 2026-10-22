@@ -474,10 +474,10 @@ function commander(g: Game, ai: AiState, dt: number) {
   if (ai.qteT <= 0) {
     ai.qteT = L.qteEvery * (0.8 + ai.rng() * 0.4);
     const b = getBattle(g, g.presence[me]);
-    // At walls, the siege event for its role joins the pool (as it does for the player).
+    // Storming walls brings the Battering Ram into the pool (as it does for the player).
     const role = b ? siegeRole(g, b, me) : null;
     const pool: QteKind[] = [...QTE_KINDS];
-    if (role) pool.push(role === 'attacker' ? 'ram' : 'oil');
+    if (role === 'attacker') pool.push('ram');
     // Shield Wall for a side holding its ground or outnumbered (as for the player).
     const mine = b ? sideOf(b, me) : undefined;
     const enemies = b ? b.sides.filter((x) => x.owner !== me).reduce((t, x) => t + Math.max(0, x.troops), 0) : 0;

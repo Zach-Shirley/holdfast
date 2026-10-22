@@ -17,7 +17,7 @@ function fortBattle() {
 }
 
 describe('siege events', () => {
-  it('attackers of a walled stronghold get the Ram; its holders get Boiling Oil', () => {
+  it('attackers of a walled stronghold are the ones storming it (and get the Ram)', () => {
     const { g, b } = fortBattle();
     expect(siegeRole(g, b, 0)).toBe('attacker');
     expect(siegeRole(g, b, 2)).toBe('defender');
@@ -34,17 +34,6 @@ describe('siege events', () => {
     if (b.endedAt === null) expect(sideDefense(g, b, defender)).toBeCloseTo(walls, 5);
   });
 
-  it('Boiling Oil kills attackers; a miss does nothing', () => {
-    const { g, b } = fortBattle();
-    // Hand the walls to the AI so it is the one pouring.
-    g.nodes[b.nodeId!].owner = 1;
-    sideOf(b, 2)!.owner = 1;
-    const before = sideOf(b, 0)!.troops;
-    applyQte(g, b.id, 1, 'oil', false);
-    expect(sideOf(b, 0)!.troops).toBe(before);
-    applyQte(g, b.id, 1, 'oil', true);
-    expect(sideOf(b, 0)!.troops).toBeLessThan(before * 0.85);
-  });
 });
 
 describe('Shield Wall and Arrow Storm', () => {

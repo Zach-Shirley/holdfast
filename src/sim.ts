@@ -20,9 +20,7 @@ export const MOMENTUM_DECAY = 0.06;
 /** War clock: when it runs out, whoever holds more strongholds wins (troops break ties). */
 export const MATCH_TIME = 720;
 
-export type QteKind = 'volley' | 'parry' | 'slash' | 'banner' | 'ram' | 'oil' | 'shield';
-/** Siege events: the Ram for attackers of a walled stronghold, Boiling Oil for its defenders. */
-export const SIEGE_KINDS: QteKind[] = ['ram', 'oil'];
+export type QteKind = 'volley' | 'parry' | 'slash' | 'banner' | 'ram' | 'shield';
 /** A breached gate lowers the walls by this much, for this long. */
 export const BREACH = 0.3;
 export const BREACH_TIME = 15;
@@ -627,10 +625,6 @@ function qteEffect(g: Game, battleId: number, owner: Player, kind: QteKind, succ
       if (!success) return 'The ram glanced off';
       b.breachUntil = g.time + BREACH_TIME;
       return `Gate breached: walls down, ${kill(0.03)} crushed`;
-    case 'oil':
-      if (!success) return 'The oil missed the ladders';
-      bump(0.05 * QTE_POWER);
-      return `Boiling oil! ${kill(0.08)} scalded`;
     case 'shield':
       if (!success) return 'The shield wall broke';
       me.guardUntil = g.time + SHIELD_TIME;

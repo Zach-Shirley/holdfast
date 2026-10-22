@@ -34,11 +34,6 @@ const RAM_BEAT = 0.62;
 const RAM_WINDOW = 0.16;
 const RAM_GATE_W = 120;
 const RAM_GATE_H = 150;
-/** Boiling Oil (holding walls): hold the button and pour over each ladder before they top the wall. */
-const OIL_TIME = 2.8;
-const OIL_NEED = 0.22;
-const OIL_TOL = 46;
-const OIL_REACH = 30;
 /** Shield Wall: hold, then release while the gauge is in the gold zone. */
 const SHIELD_FILL = 1.15;
 const SHIELD_LIMIT = 3;
@@ -58,8 +53,7 @@ type Qte =
   | { kind: 'pursuit'; t: number; runners: { x: number; y: number; vx: number; vy: number; hit: boolean }[] }
   | { kind: 'shield'; t: number; x: number; y: number; zone: [number, number]; pressAt: number | null }
   | { kind: 'arrows'; t: number; ground: number; arrows: { x: number; at: number; hit: boolean; landed: boolean }[] }
-  | { kind: 'ram'; t: number; x: number; y: number; next: number; struck: number }
-  | { kind: 'oil'; t: number; y: number; x0: number; x1: number; ladders: { x: number; oil: number }[]; drops: { x: number; y: number; t: number }[] };
+  | { kind: 'ram'; t: number; x: number; y: number; next: number; struck: number };
 
 interface Floater {
   text: string;
@@ -162,17 +156,6 @@ export const DRILLS: Record<ViewKind, { name: string; color: string; steps: stri
     effect: 'Breaches the gate: the defenders lose 0.3 of their wall bonus for 15 s, and about 8% of them are crushed.',
     tip: 'It is a rhythm: after the first beat, the next two come at the same pace. Listen for the thuds.',
   },
-  oil: {
-    name: 'Boiling Oil',
-    color: '#ff7b39',
-    steps: [
-      'Only when you hold the walls (defending a fort or capital you own).',
-      'Enemy ladders climb your wall. Press and hold anywhere on the wall to pour.',
-      'Keep holding and sweep along the wall over every ladder (any order) until each one is scalded.',
-    ],
-    effect: 'Kills about 20% of the attackers (plus 2–3) and steadies your line.',
-    tip: 'Pause a moment over each ladder: it needs a short pour. Stay on the wall line.',
-  },
   pursuit: {
     name: 'Pursuit',
     color: '#9ff0b5',
@@ -197,7 +180,6 @@ export const SHORT: Record<ViewKind, string> = {
   shield: 'Hold the button on the shield and let go while the gauge is in the gold zone.',
   arrows: 'Click each falling arrow before it lands on your line.',
   ram: 'Click the gate each time the closing ring touches it: three beats in rhythm.',
-  oil: 'Hold the button on the wall and sweep over every ladder until each is scalded.',
 };
 
 /** Stand-in battle drawn behind the Training screen. */
@@ -575,7 +557,7 @@ export class BattleView {
     const stance = sideOf(b, 0)?.stance;
     const favoured: QteKind | null = stance === 'assault' ? 'slash' : stance === 'hold' ? 'parry' : stance === 'skirmish' ? 'volley' : null;
     const role = siegeRole(g, b, 0);
-    const extra: ViewKind[] = role === 'attacker' ? ['ram'] : role === 'defender' ? ['oil'] : [];
+    const extra: ViewKind[] = role === 'attacker' ? ['ram'] : [];
     const me = sideOf(b, 0);
     const foeTroops = foes.reduce((t, f) => t + f.troops, 0);
     if (me && (me.stance === 'hold' || me.troops < foeTroops)) extra.push('shield');
@@ -584,7 +566,7 @@ export class BattleView {
     const commanded = foes.some((f) => f.owner !== 2);
     if (archer || commanded) extra.push('arrows');
     const pool = (['volley', 'parry', 'slash', 'banner', ...extra] as ViewKind[]).filter((k) => k !== this.last);
-    const weights = pool.map((k) => (k === favoured ? 2.5 : k === 'ram' || k === 'oil' ? 1.6 : k === 'shield' ? (me?.stance === 'hold' ? 1.4 : 0.8) : k === 'arrows' ? (archer ? 1.5 : 0.4) : 1));
+    const weights = pool.map((k) => (k === favoured ? 2.5 : k === 'ram' ? 1.6 : k === 'shield' ? (me?.stance === 'hold' ? 1.4 : 0.8) : k === 'arrows' ? (archer ? 1.5 : 0.4) : 1));
     let r = Math.random() * weights.reduce((p, q) => p + q, 0);
     for (let i = 0; i < pool.length; i++) if ((r -= weights[i]) <= 0) return pool[i];
     return pool[0];
@@ -653,13 +635,6 @@ export class BattleView {
     } else if (kind === 'ram') {
       const c = this.center();
       this.qte = { kind, t: 0, x: c.x - 60 + (Math.random() - 0.5) * 80, y: c.y + 10, next: 0, struck: -9 };
-    } else if (kind === 'oil') {
-      const a = this.area();
-      const x0 = a.x0 + 40;
-      const x1 = a.x1 - 40;
-      // Three ladders, spread out along the wall.
-      const slots = [0.15, 0.5, 0.85].map((f) => x0 + (x1 - x0) * (f + (Math.random() - 0.5) * 0.16));
-      this.qte = { kind, t: 0, y: a.y0 + (a.y1 - a.y0) * 0.38, x0, x1, ladders: slots.map((x) => ({ x, oil: 0 })), drops: [] };
     } else {
       const c = this.center();
       const ang = Math.random() * Math.PI * 2;
@@ -810,8 +785,6 @@ export class BattleView {
         sfx('gate');
         this.resolve(true, q.x, q.y);
       } else sfx('ram');
-    } else if (q.kind === 'oil') {
-      if (Math.abs(y - q.y) > OIL_TOL) this.hint('Press on the wall itself');
     } else if (q.kind === 'duel') {
       if (q.t < q.fireAt) return this.resolve(false, q.x, q.y, 'False start: wait for the NOW! signal');
       if (Math.hypot(x - q.x, y - q.y) > DUEL_TARGET_R + 20) return this.hint('Click the NOW! target');
@@ -940,27 +913,7 @@ export class BattleView {
       }
       this.finishArrows(q);
     } else if (q.kind === 'ram' && q.t > RAM_FIRST + q.next * RAM_BEAT + RAM_WINDOW) this.resolve(false, q.x, q.y, q.next ? 'Lost the rhythm: keep striking on the beat' : 'Missed the beat: click the gate as the ring meets it');
-    else if (q.kind === 'oil') {
-      const pouring = this.mouse.down && Math.abs(this.mouse.y - q.y) <= OIL_TOL && this.mouse.x >= q.x0 - 20 && this.mouse.x <= q.x1 + 20;
-      if (pouring) {
-        if (Math.random() < 0.6) q.drops.push({ x: this.mouse.x + (Math.random() - 0.5) * 14, y: q.y + 6, t: 0 });
-        for (const l of q.ladders) {
-          if (l.oil >= OIL_NEED || Math.abs(this.mouse.x - l.x) > OIL_REACH) continue;
-          l.oil += dt;
-          if (l.oil >= OIL_NEED) {
-            sfx('sizzle');
-            this.clicks.push({ x: l.x, y: q.y + 40, t: 0 });
-          }
-        }
-      }
-      for (const d of q.drops) {
-        d.t += dt;
-        d.y += 380 * dt;
-      }
-      q.drops = q.drops.filter((d) => d.t < 0.6);
-      if (q.ladders.every((l) => l.oil >= OIL_NEED)) this.resolve(true, (q.x0 + q.x1) / 2, q.y);
-      else if (q.t >= OIL_TIME) this.resolve(false, (q.x0 + q.x1) / 2, q.y, `The ladders reached the top: ${q.ladders.filter((l) => l.oil >= OIL_NEED).length}/3 scalded`);
-    } else if (q.kind === 'banner') {
+    else if (q.kind === 'banner') {
       const p = this.bannerPos(q);
       if (this.mouse.down && Math.hypot(this.mouse.x - p.x, this.mouse.y - p.y) <= BANNER_R) {
         q.held += dt;
@@ -1045,18 +998,6 @@ export class BattleView {
       if (q.next < 3 && q.t >= RAM_FIRST + q.next * RAM_BEAT - 0.02) {
         click(q.x, q.y);
         this.press();
-      }
-    } else if (q.kind === 'oil') {
-      // Press on the wall, then pour over each ladder in turn.
-      const todo = q.ladders.find((l) => l.oil < OIL_NEED);
-      if (!todo) return;
-      if (q.t < 0.35) glide(q.ladders[0].x, q.y, 12);
-      else {
-        if (!this.mouse.down) {
-          this.mouse.down = true;
-          this.clicks.push({ x: this.mouse.x, y: this.mouse.y, t: 0 });
-        }
-        glide(todo.x, q.y, 9);
       }
     } else if (q.kind === 'duel') {
       // Wait near the centre, then click a quarter-second after the signal.
@@ -1606,80 +1547,6 @@ export class BattleView {
         }
       }
       this.label(`BATTERING RAM · click the gate on the beat (${q.next}/3)`, q.x, gy + RAM_GATE_H + 34);
-    } else if (q.kind === 'oil') {
-      const top = q.y;
-      // The wall you stand on, with battlements.
-      ctx.fillStyle = 'rgba(70,58,50,0.92)';
-      ctx.fillRect(q.x0 - 30, top - 16, q.x1 - q.x0 + 60, 32);
-      ctx.fillStyle = 'rgba(40,32,28,0.9)';
-      for (let x = q.x0 - 30; x < q.x1 + 30; x += 34) ctx.fillRect(x, top - 30, 20, 14);
-      ctx.fillStyle = 'rgba(46,37,32,0.96)';
-      ctx.fillRect(q.x0 - 30, top + 16, q.x1 - q.x0 + 60, 200);
-      // Ladders climbing toward the top as time runs out.
-      const climb = Math.min(1, q.t / OIL_TIME);
-      for (const l of q.ladders) {
-        const done = l.oil >= OIL_NEED;
-        const ly = top + 16 + (1 - climb) * 150;
-        ctx.strokeStyle = done ? 'rgba(120,90,60,0.5)' : '#b88a55';
-        ctx.lineWidth = 4;
-        ctx.beginPath();
-        ctx.moveTo(l.x - 14, top + 220);
-        ctx.lineTo(l.x - 14, ly);
-        ctx.moveTo(l.x + 14, top + 220);
-        ctx.lineTo(l.x + 14, ly);
-        for (let y = ly + 12; y < top + 220; y += 22) {
-          ctx.moveTo(l.x - 14, y);
-          ctx.lineTo(l.x + 14, y);
-        }
-        ctx.stroke();
-        if (!done) {
-          // A climber at the top of the ladder.
-          ctx.fillStyle = OWNER_DARK[1];
-          ctx.strokeStyle = OWNER_COLOR[1];
-          ctx.lineWidth = 2;
-          ctx.beginPath();
-          ctx.roundRect(l.x - 8, ly - 4, 16, 22, 6);
-          ctx.fill();
-          ctx.stroke();
-          ctx.fillStyle = OWNER_LIGHT[1];
-          ctx.beginPath();
-          ctx.arc(l.x, ly - 10, 7, 0, Math.PI * 2);
-          ctx.fill();
-          // Pour progress.
-          ctx.strokeStyle = '#ff7b39';
-          ctx.lineWidth = 4;
-          ctx.beginPath();
-          ctx.arc(l.x, top, OIL_REACH, -Math.PI / 2, -Math.PI / 2 + (l.oil / OIL_NEED) * Math.PI * 2);
-          ctx.stroke();
-          ctx.strokeStyle = 'rgba(255,123,57,0.35)';
-          ctx.lineWidth = 2;
-          ctx.beginPath();
-          ctx.arc(l.x, top, OIL_REACH, 0, Math.PI * 2);
-          ctx.stroke();
-        } else {
-          ctx.fillStyle = 'rgba(255,170,90,0.6)';
-          ctx.font = '700 13px "Chakra Petch", sans-serif';
-          ctx.textAlign = 'center';
-          ctx.fillText('scalded', l.x, top + 40);
-        }
-      }
-      for (const d of q.drops) {
-        ctx.fillStyle = `rgba(255,140,60,${1 - d.t / 0.6})`;
-        ctx.beginPath();
-        ctx.arc(d.x, d.y, 4, 0, Math.PI * 2);
-        ctx.fill();
-      }
-      // Cauldron under the cursor while pouring.
-      if (this.mouse.down && Math.abs(this.mouse.y - top) <= OIL_TOL) {
-        ctx.fillStyle = '#2b2b2b';
-        ctx.strokeStyle = '#ff7b39';
-        ctx.lineWidth = 2;
-        ctx.beginPath();
-        ctx.arc(this.mouse.x, top - 4, 14, 0, Math.PI);
-        ctx.fill();
-        ctx.stroke();
-      }
-      this.label('BOILING OIL · hold on the wall and sweep over every ladder', (q.x0 + q.x1) / 2, top - 52);
     } else if (q.kind === 'pursuit') {
       for (const r of q.runners) {
         if (r.hit) continue;

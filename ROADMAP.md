@@ -91,7 +91,7 @@ The AI needs to value specialties, use rally routes and abilities, and play unde
 
 ## Phase 5: Long-term goals (campaign, mastery, modes) (MOSTLY BUILT 2026-10-22)
 
-*Built: a ten-mission campaign with stars, the Battering Ram, Boiling Oil, Shield Wall and Arrow Storm events, the Gauntlet, per-event records and the Daily War. Not built: Cavalry Charge.*
+*Built: a ten-mission campaign with stars, the Battering Ram, Shield Wall and Arrow Storm events, the Gauntlet, per-event records and the Daily War. Not built: Cavalry Charge. Boiling Oil was built and then removed at Zach's request (it did not fit functionally or visually).*
 
 *About 3–5 days. Confidence: medium (content-heavy).*
 

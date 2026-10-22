@@ -147,11 +147,11 @@ export const MISSIONS: Mission[] = [
     difficulty: 'normal',
     passiveFor: 20,
     story:
-      'Greywall is yours, and Morwen wants it back. Her scouts report four assaults coming in waves. Hold the fort for three minutes and she will sue for peace. From the battlements, boiling oil is your friend.',
+      'Greywall is yours, and Morwen wants it back. Her scouts report four assaults coming in waves. Hold the fort for three minutes and she will sue for peace. Behind a raised shield wall, a few can hold off many.',
     objectiveText: 'Hold Greywall until 3:00. If it falls, the mission is lost.',
     objective: { kind: 'hold', node: 3, until: 180 },
-    stars: [noLosses, { text: 'Pour Boiling Oil 3 times', test: (_g, s) => (s.hits.oil ?? 0) >= 3 }],
-    tip: 'Step into the defence when a wave hits: Boiling Oil only appears for defenders on walls. Set a rally route from Westmarch to Greywall.',
+    stars: [noLosses, { text: 'Raise 3 Shield Walls', test: (_g, s) => (s.hits.shield ?? 0) >= 3 }],
+    tip: 'Step into the defence when a wave hits: outnumbered (or on the Hold stance), you get Shield Walls. Set a rally route from Westmarch to Greywall.',
     script: [
       { at: 20, text: "Morwen's banners on the horizon!", wave: { from: 4, to: 3, troops: 22, stance: 'assault' } },
       { at: 65, wave: { from: 6, to: 3, troops: 26, stance: 'assault' } },
@@ -271,7 +271,7 @@ export const MISSIONS: Mission[] = [
     objectiveText: 'Keep Westmarch until 3:00 (or take his capital).',
     objective: { kind: 'survive', until: 180 },
     stars: [{ text: 'Never lose Kingsrest', test: (_g, s) => !s.lostIds.includes(3), failed: (_g, s) => s.lostIds.includes(3) }, { text: 'Take any enemy stronghold', test: (_g, s) => s.takenFromEnemy > 0 }],
-    tip: 'Kingsrest is your shield: defenders on its walls fight ×1.4 and get Boiling Oil. Bank your Charge for the big assaults.',
+    tip: 'Kingsrest is your shield: defenders on its walls fight ×1.4. Bank your Charge for the big assaults.',
     script: [
       { at: 5, text: 'Rook: "Let the dice decide."', wave: { from: 6, to: 3, troops: 20, stance: 'assault' } },
       { at: 60, text: "More of Rook's mercenaries arrive at Graves.", reinforce: { node: 6, troops: 30 } },

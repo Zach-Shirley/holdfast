@@ -175,7 +175,7 @@ app.innerHTML = `
           <p><b>Rout:</b> a side below a quarter of its peak breaks and takes 25% extra losses. Chase a routing enemy with <b>Pursuit</b>.</p>
           <p><b>Stances</b> (dock): Assault +20% damage, Hold −20% damage taken, Skirmish +25% march speed. Each brings more of one event type.</p>
           <p>Red arrows at the screen edge point to your other battles that are going badly. Click one to jump there.</p>
-          <p><b>Sieges:</b> storming a fort or capital brings the <b>Battering Ram</b> (click the gate on three beats: the walls drop for 15 s). Holding one brings <b>Boiling Oil</b> (hold on the wall and sweep over every ladder).</p>
+          <p><b>Sieges:</b> storming a fort or capital brings the <b>Battering Ram</b> (click the gate on three beats: the walls drop for 15 s).</p>
           <p><b>Shield Wall</b> (Hold stance or outnumbered): hold on the shield and let go in the gold zone, and your side takes 45% fewer losses for 6 s. <b>Arrow Storm</b> (enemy archers, most of all the Archer's): click the falling arrows before they land.</p>
           <h3>Modes</h3>
           <p><b>Campaign:</b> ten missions against the four rivals, each with its own map, objective and two bonus stars. Winning a mission opens the next. <b>Training</b> drills any event; its <b>Gauntlet</b> throws every event at you faster and faster until you miss three, for a high score. The <b>Daily war</b> is the same map and rival for everyone each day: beat your best time and keep your streak.</p>

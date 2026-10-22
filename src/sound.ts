@@ -107,8 +107,7 @@ export type Sfx =
   | 'defeat'
   | 'click'
   | 'ram'
-  | 'gate'
-  | 'sizzle';
+  | 'gate';
 
 export function sfx(name: Sfx) {
   if (!ctx || audioSettings.muted) return;
@@ -190,9 +189,6 @@ export function sfx(name: Sfx) {
       // Splintering wood.
       burst('bandpass', 900, 300, 0.5, 0.4, 0, 2);
       tone('sawtooth', 120, 50, 0.45, 0.2, 0.02);
-      break;
-    case 'sizzle':
-      burst('highpass', 3000, 6000, 0.12, 0.12);
       break;
   }
 }
