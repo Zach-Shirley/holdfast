@@ -147,6 +147,7 @@ button.primary:hover {
   font-variant-numeric: tabular-nums;
   font-weight: 600;
   margin-right: 6px;
+  white-space: nowrap;
 }
 .clock.urgent {
   color: #ff8a8a;
@@ -1381,4 +1382,27 @@ button.resign:hover {
 }
 .end-stars li.ok {
   color: #ffd166;
+}
+
+/* ---------- Top bar fits narrower windows ---------- */
+.forces {
+  flex: 1;
+  min-width: 0;
+  justify-content: center;
+}
+.power {
+  width: auto;
+  flex: 0 1 220px;
+  min-width: 60px;
+}
+.right {
+  flex-shrink: 0;
+}
+@media (max-width: 1100px) {
+  .hud-top .brand {
+    display: none;
+  }
+  .force .nodes {
+    display: none;
+  }
 }

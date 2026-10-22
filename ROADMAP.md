@@ -89,7 +89,9 @@ The AI needs to value specialties, use rally routes and abilities, and play unde
   - **Gambler:** all-in pushes.
 - These combine with difficulty into a ladder.
 
-## Phase 5: Long-term goals (campaign, mastery, modes)
+## Phase 5: Long-term goals (campaign, mastery, modes) (MOSTLY BUILT 2026-10-22)
+
+*Built: a ten-mission campaign with stars, the Battering Ram and Boiling Oil siege events, the Gauntlet, and per-event records. Not built: Shield Wall, Cavalry Charge, Arrow Storm, and the daily war.*
 
 *About 3–5 days. Confidence: medium (content-heavy).*
 

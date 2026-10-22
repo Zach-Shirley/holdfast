@@ -145,6 +145,7 @@ export const MISSIONS: Mission[] = [
     title: 'Hold Greywall',
     rival: 'turtle',
     difficulty: 'normal',
+    passiveFor: 20,
     story:
       'Greywall is yours, and Morwen wants it back. Her scouts report four assaults coming in waves. Hold the fort for three minutes and she will sue for peace. From the battlements, boiling oil is your friend.',
     objectiveText: 'Hold Greywall until 3:00. If it falls, the mission is lost.',
@@ -164,9 +165,9 @@ export const MISSIONS: Mission[] = [
           ['Westmarch', 180, 450, 'capital', 0, 45],
           ['Millrace', 430, 280, 'village', 0, 14],
           ['Sedgeford', 430, 640, 'village', 0, 14],
-          ['Greywall', 770, 450, 'fort', 0, 34],
+          ['Greywall', 770, 450, 'fort', 0, 40],
           ['Ashby', 1060, 250, 'village', 1, 16],
-          ['Wallmere', 1420, 450, 'capital', 1, 65],
+          ['Wallmere', 1420, 450, 'capital', 1, 50],
           ['Thornby', 1060, 660, 'village', 1, 16],
         ],
         [[0, 1], [0, 2], [1, 2], [1, 3], [2, 3], [3, 4], [3, 6], [4, 5], [6, 5]],
@@ -264,7 +265,7 @@ export const MISSIONS: Mission[] = [
     act: 'Act III · The Gambler',
     title: 'Outnumbered',
     rival: 'gambler',
-    difficulty: 'normal',
+    difficulty: 'hard',
     story:
       'Rook has raised a host twice your size and rolled the dice on one great push. You cannot match him in the field. Keep Westmarch standing for three minutes, until the levies from the west arrive.',
     objectiveText: 'Keep Westmarch until 3:00 (or take his capital).',
@@ -273,8 +274,8 @@ export const MISSIONS: Mission[] = [
     tip: 'Kingsrest is your shield: defenders on its walls fight ×1.4 and get Boiling Oil. Bank your Charge for the big assaults.',
     script: [
       { at: 5, text: 'Rook: "Let the dice decide."', wave: { from: 6, to: 3, troops: 20, stance: 'assault' } },
-      { at: 60, text: "More of Rook's mercenaries arrive at Graves.", reinforce: { node: 6, troops: 20 } },
-      { at: 110, text: 'Rook doubles down: a fresh host marches on Kingsrest.', wave: { from: 7, to: 3, troops: 35, stance: 'assault' } },
+      { at: 60, text: "More of Rook's mercenaries arrive at Graves.", reinforce: { node: 6, troops: 30 } },
+      { at: 110, text: 'Rook doubles down: a fresh host marches on Kingsrest.', wave: { from: 7, to: 3, troops: 45, stance: 'assault' } },
       { at: 150, text: 'The western levies are close. Hold!' },
     ],
     make: () =>
@@ -288,7 +289,7 @@ export const MISSIONS: Mission[] = [
           ['Highcliff', 1000, 230, 'village', 1, 14],
           ['Redwater', 1000, 680, 'village', 1, 14],
           ['Graves', 1200, 450, 'fort', 1, 24],
-          ["Fortune's Rest", 1450, 450, 'capital', 1, 45],
+          ["Fortune's Rest", 1450, 450, 'capital', 1, 60],
         ],
         [[0, 1], [0, 2], [1, 2], [1, 3], [2, 3], [3, 4], [3, 5], [3, 6], [4, 6], [5, 6], [4, 7], [6, 7], [5, 7]],
       ),
@@ -420,7 +421,8 @@ export class CampaignRun {
 
   /** The enemy is held back while the mission says so. */
   passive(g: Game): boolean {
-    return g.time < (this.mission.passiveFor ?? 0);
+    // Every mission gives you a few seconds to read the map before the enemy moves.
+    return g.time < (this.mission.passiveFor ?? 10);
   }
 
   noteQte(kind: QteKind, success: boolean) {
