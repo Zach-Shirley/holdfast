@@ -67,3 +67,35 @@ export function saveStars(id: string, stars: number) {
   campaignStars[id] = Math.max(campaignStars[id] ?? 0, stars);
   save(CAMPAIGN_KEY, campaignStars);
 }
+
+/** Daily War results, by date: fastest win (seconds) and attempts. */
+export interface DailyResult {
+  best: number | null;
+  tries: number;
+}
+
+const DAILY_KEY = 'holdfast.daily.v1';
+export const dailyResults: Record<string, DailyResult> = load(DAILY_KEY, {});
+
+export function saveDaily(date: string, won: boolean, time: number): boolean {
+  const d = (dailyResults[date] ??= { best: null, tries: 0 });
+  d.tries++;
+  const record = won && (d.best === null || time < d.best);
+  if (record) d.best = time;
+  save(DAILY_KEY, dailyResults);
+  return record;
+}
+
+/** Days in a row (ending today or yesterday) with a Daily War won. */
+export function dailyStreak(today: Date): number {
+  let n = 0;
+  const d = new Date(today);
+  const key = (x: Date) => `${x.getFullYear()}-${String(x.getMonth() + 1).padStart(2, '0')}-${String(x.getDate()).padStart(2, '0')}`;
+  // Today not won yet does not break the streak.
+  if (dailyResults[key(d)]?.best == null) d.setDate(d.getDate() - 1);
+  while (dailyResults[key(d)]?.best != null) {
+    n++;
+    d.setDate(d.getDate() - 1);
+  }
+  return n;
+}

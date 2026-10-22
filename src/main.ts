@@ -6,7 +6,8 @@ import { MapRenderer, OWNER_COLOR, applyPalette, nodeRadius, paintBackground } f
 import { prefs, savePrefs } from './prefs';
 import { Tutorial, setupTutorialGame, tutorialMap } from './tutorial';
 import { CampaignRun, MISSIONS, createMissionGame, starsFor, type Mission } from './campaign';
-import { campaignStars, saveStars } from './records';
+import { campaignStars, dailyResults, dailyStreak, saveDaily, saveStars } from './records';
+import { todaysWar, type DailySpec } from './daily';
 import { applyVolume, audioSettings, audioState, initAudio, setIntensity, setMusic, sfx } from './sound';
 import {
   ABILITIES,
@@ -62,6 +63,8 @@ let tutorial: Tutorial | null = null;
 let campaign: CampaignRun | null = null;
 /** The mission picked on the campaign screen. */
 let campaignPick = 0;
+/** Today's Daily War, while one is being played. */
+let daily: DailySpec | null = null;
 let ai0: AiState | null = null;
 let leftRival: Personality = 'turtle';
 let watchSpeed = 1;
@@ -148,6 +151,7 @@ app.innerHTML = `
       <h3 class="gap">Your commander</h3>
       <div class="commanders" id="commanders">${PLAYABLE.map((c) => `<button data-c="${c}"><b>${COMMANDERS[c].label}</b><i>${COMMANDERS[c].title}</i><span>${COMMANDERS[c].desc}</span></button>`).join('')}</div>
       <div class="actions"><button class="primary" id="start">Start war</button><button class="primary alt" id="campaign-open">Campaign</button><button class="primary alt" id="tutorial">Tutorial</button><button id="training">Training: learn the quick-time events</button><button id="setup-help">How to play</button><button id="setup-settings">Settings</button></div>
+      <div class="daily-row" id="daily-row"></div>
       <div class="watch-row"><span>Watch two AIs fight (you observe):</span><div class="seg" data-key="watchLeft"><button data-v="random">Random</button>${RIVALS.map((p) => `<button data-v="${p}">${PERSONALITIES[p].label}</button>`).join('')}</div><span class="muted">vs the Rival above</span><button id="watch">Watch AI vs AI</button></div>
     </div>
   </section>
@@ -172,8 +176,9 @@ app.innerHTML = `
           <p><b>Stances</b> (dock): Assault +20% damage, Hold −20% damage taken, Skirmish +25% march speed. Each brings more of one event type.</p>
           <p>Red arrows at the screen edge point to your other battles that are going badly. Click one to jump there.</p>
           <p><b>Sieges:</b> storming a fort or capital brings the <b>Battering Ram</b> (click the gate on three beats: the walls drop for 15 s). Holding one brings <b>Boiling Oil</b> (hold on the wall and sweep over every ladder).</p>
+          <p><b>Shield Wall</b> (Hold stance or outnumbered): hold on the shield and let go in the gold zone, and your side takes 45% fewer losses for 6 s. <b>Arrow Storm</b> (enemy archers, most of all the Archer's): click the falling arrows before they land.</p>
           <h3>Modes</h3>
-          <p><b>Campaign:</b> ten missions against the four rivals, each with its own map, objective and two bonus stars. Winning a mission opens the next. <b>Training</b> drills any event; its <b>Gauntlet</b> throws every event at you faster and faster until you miss three, for a high score.</p>
+          <p><b>Campaign:</b> ten missions against the four rivals, each with its own map, objective and two bonus stars. Winning a mission opens the next. <b>Training</b> drills any event; its <b>Gauntlet</b> throws every event at you faster and faster until you miss three, for a high score. The <b>Daily war</b> is the same map and rival for everyone each day: beat your best time and keep your streak.</p>
           <h3>Commanders and rivals</h3>
           <p>Pick a <b>commander</b> before each war: the Archer (stronger, easier Volleys), the Duelist (Slash kills, duel edge), the Iron Wall (free Parry misses, stronger walls), the Raider (fast columns, ambush momentum) or the Herald (faster rally meter).</p>
           <p>Your <b>rival</b> has a personality and a commander of their own: Varric the Relentless (Aggressor), Lady Morwen of the Wall (Turtle), Silas Quickfinger (Opportunist) or Captain Rook (Gambler). Expect them to talk.</p>
@@ -333,6 +338,9 @@ function buildSetup() {
   $('start').addEventListener('click', () => startGame(false));
   $('tutorial').addEventListener('click', startTutorial);
   $('campaign-open').addEventListener('click', openCampaign);
+  $('daily-row').addEventListener('click', (e) => {
+    if ((e.target as HTMLElement).id === 'daily-start') startGame(false, false, null, todaysWar());
+  });
   $('camp-back').addEventListener('click', () => {
     $('campaign').classList.add('hidden');
     refreshSetup(false);
@@ -416,7 +424,17 @@ function renderCampaign() {
   drawPreview(made.map, $<HTMLCanvasElement>('camp-preview'), made.owners.map(([o], id) => (made.owners.some(([, t]) => t) ? o : id === made.map.capitals[0] ? 0 : id === made.map.capitals[1] ? 1 : 2)));
 }
 
+/** The start screen's Daily War line: today's conditions and your result. */
+function renderDaily() {
+  const d = todaysWar();
+  const res = dailyResults[d.date];
+  const p = PERSONALITIES[d.rival];
+  const streak = dailyStreak(new Date());
+  $('daily-row').innerHTML = `<span class="daily-tag">Daily war</span><span>${d.nodes} strongholds vs <b>${p.name}</b> (${p.label}) · ${d.difficulty}${d.fog ? ' · fog' : ''}</span><span class="muted">${res?.best != null ? `Your best today: <b>${mmss(res.best)}</b>` : res ? `${res.tries} tr${res.tries > 1 ? 'ies' : 'y'}, not won yet` : 'Same war for everyone today'}${streak ? ` · ${streak}-day streak` : ''}</span><button id="daily-start">Play today's war</button>`;
+}
+
 function refreshSetup(regen: boolean) {
+  renderDaily();
   document.querySelectorAll<HTMLElement>('#setup .seg').forEach((seg) => {
     const v = String((settings as unknown as Record<string, unknown>)[seg.dataset.key!]);
     seg.querySelectorAll<HTMLElement>('button').forEach((b) => b.classList.toggle('on', b.dataset.v === v));
@@ -468,14 +486,15 @@ function startTutorial() {
   startGame(false, true);
 }
 
-function startGame(watch = false, tutorialMode = false, mission: Mission | null = null) {
+function startGame(watch = false, tutorialMode = false, mission: Mission | null = null, dailyWar: DailySpec | null = null) {
+  daily = dailyWar;
   if (!map) map = generateMap(settings.seed, settings.nodes);
   spectating = watch;
   tutorial?.destroy();
   tutorial = null;
   campaign?.destroy();
   campaign = null;
-  rival = settings.rival === 'random' ? RIVALS[Math.floor(Math.random() * RIVALS.length)] : settings.rival;
+  rival = daily ? daily.rival : settings.rival === 'random' ? RIVALS[Math.floor(Math.random() * RIVALS.length)] : settings.rival;
   if (watch) {
     leftRival = settings.watchLeft === 'random' ? RIVALS[Math.floor(Math.random() * RIVALS.length)] : settings.watchLeft;
     ai0 = createAi(0, settings.difficulty, settings.seed + 7, true, leftRival);
@@ -497,6 +516,8 @@ function startGame(watch = false, tutorialMode = false, mission: Mission | null 
     rival = mission.rival;
     game = createMissionGame(mission, settings.commander);
     campaign = new CampaignRun(app, mission, game, (text) => toast(text, `camp:${text}`, false, true));
+  } else if (daily) {
+    game = createGame(generateMap(daily.seed, daily.nodes), { fog: daily.fog, commanders: [settings.commander, PERSONALITIES[rival].commander] });
   } else game = createGame(map, { fog: !watch && settings.fog === 'on', commanders: [myCommander, PERSONALITIES[rival].commander] });
   bv.spectating = watch;
   bv.teach = tutorialMode;
@@ -511,7 +532,7 @@ function startGame(watch = false, tutorialMode = false, mission: Mission | null 
   document.querySelector('.force.foe .lbl')!.setAttribute('title', `${PERSONALITIES[rival].name} (${PERSONALITIES[rival].label})`);
   selected.clear();
   targeting = null;
-  ai = createAi(1, tutorialMode ? 'easy' : mission ? mission.difficulty : settings.difficulty, settings.seed, true, rival);
+  ai = createAi(1, tutorialMode ? 'easy' : mission ? mission.difficulty : daily ? daily.difficulty : settings.difficulty, daily ? daily.seed : settings.seed, true, rival);
   renderer.setMap(game.map);
   onResize();
   paused = false;
@@ -532,6 +553,8 @@ function setWatchSpeed(x: number) {
   watchSpeed = x;
   document.querySelectorAll<HTMLElement>('#spec-speed button').forEach((b) => b.classList.toggle('on', Number(b.dataset.x) === x));
 }
+
+const mmss = (x: number) => `${Math.floor(x / 60)}:${String(Math.floor(x % 60)).padStart(2, '0')}`;
 
 function showEnd() {
   if (!game) return;
@@ -564,8 +587,14 @@ function showEnd() {
   const endStars = $('end-stars');
   endStars.classList.toggle('hidden', !campaign);
   $('next-mission').classList.add('hidden');
-  $('rematch').textContent = campaign ? 'Retry mission' : 'Rematch (same map)';
+  $('rematch').textContent = campaign ? 'Retry mission' : daily ? "Retry today's war" : 'Rematch (same map)';
   $('newgame').textContent = campaign ? 'Campaign' : 'New war';
+  if (daily) {
+    const record = saveDaily(daily.date, won, game.time);
+    const best = dailyResults[daily.date].best;
+    endStars.classList.remove('hidden');
+    endStars.innerHTML = `<p class="daily-end">Daily War · ${daily.date}<br>${won ? (record ? '<b>New best for today!</b> ' : '') + `Won in ${mmss(game.time)}.` : 'Lost.'} Best today: <b>${best === null ? '–' : mmss(best)}</b> · attempts ${dailyResults[daily.date].tries} · days won in a row: <b>${dailyStreak(new Date())}</b></p>`;
+  }
   if (campaign) {
     const m = campaign.mission;
     const got = starsFor(m, game, campaign.stats);
@@ -840,7 +869,7 @@ $('btn-resign').addEventListener('click', () => {
 });
 $('btn-help').addEventListener('click', () => $('help').classList.toggle('hidden'));
 $('help-close').addEventListener('click', () => $('help').classList.add('hidden'));
-$('rematch').addEventListener('click', () => (campaign ? startGame(false, false, campaign.mission) : tutorial ? startTutorial() : startGame(spectating)));
+$('rematch').addEventListener('click', () => (campaign ? startGame(false, false, campaign.mission) : daily ? startGame(false, false, null, todaysWar()) : tutorial ? startTutorial() : startGame(spectating)));
 $('next-mission').addEventListener('click', () => {
   if (!campaign) return;
   campaignPick = MISSIONS.indexOf(campaign.mission) + 1;
@@ -920,7 +949,6 @@ function updateHud(g: Game) {
   if (now - resignAsk > 3) $('btn-resign').textContent = 'Resign';
   // War clock counts down; at zero, whoever holds more strongholds wins.
   const s = Math.max(0, Math.ceil(MATCH_TIME - g.time));
-  const mmss = (x: number) => `${Math.floor(x / 60)}:${String(Math.floor(x % 60)).padStart(2, '0')}`;
   const left = campaign?.timeLeft(g) ?? null;
   $('clock').textContent = campaign ? (left !== null ? `${mmss(left)} left` : mmss(g.time)) : g.noClock ? 'Tutorial' : `${mmss(s)} left`;
   $('clock').classList.toggle('urgent', campaign ? left !== null && left <= 30 : !g.noClock && s <= 120);

@@ -2,7 +2,7 @@
 
 A small real-time strategy game about **where to spend your attention**. Two realms fight over 6–16 strongholds joined by roads. You send troops down the roads as columns. When armies meet, a battle starts. Left alone, numbers decide it. Step inside and mouse-driven quick-time events swing the fight. But the battle view hides the map, and you can only be in one battle at a time. The enemy commander has the same limit, and its flag shows where it is.
 
-**Status: playable prototype** (single player vs AI, desktop browser, mouse). It has a ten-mission campaign, a tutorial, Training with a high-score Gauntlet, eight quick-time events, five commanders, four AI rivals, fog of war and an AI-vs-AI watch mode. There's no online play, mobile support or license yet (see [Known limitations](#known-limitations)).
+**Status: playable prototype** (single player vs AI, desktop browser, mouse). It has a ten-mission campaign, a Daily War, a tutorial, Training with a high-score Gauntlet, ten quick-time events, five commanders, four AI rivals, fog of war and an AI-vs-AI watch mode. There's no online play, mobile support or license yet (see [Known limitations](#known-limitations)).
 
 **Play:** https://holdfast-umber.vercel.app (desktop browser, mouse). Every push to `main` redeploys it.
 
@@ -22,6 +22,8 @@ A small real-time strategy game about **where to spend your attention**. Two rea
    - **Duel:** when both commanders are in the same battle, click first on the signal.
    - **Battering Ram** (storming a fort or capital): click the gate on three beats. A breach lowers the walls for 15 s.
    - **Boiling Oil** (holding a fort or capital): hold on the wall and sweep over every ladder.
+   - **Shield Wall** (Hold stance or outnumbered): hold on the shield, let go in the gold zone. Your side takes 45% fewer losses for 6 s.
+   - **Arrow Storm** (enemy archers, most often the Archer commander's): click the three falling arrows before they land; each one that lands costs troops. The AI faces it too when you lead as the Archer.
 4. Hits fill your **rally meter**. A full meter unlocks **CHARGE!** (a quarter of the enemy falls). The meter belongs to your commander, so you can save it for the fight that matters.
 5. **Win** by taking the enemy capital. A 12-minute clock breaks deadlocks.
 
@@ -30,6 +32,7 @@ Other controls:
 - **Click a column:** turn it back.
 - **Orders:** March, Inspire and Spy.
 - **Training:** practise any event on its own, or run the **Gauntlet**: every event in random order, faster with each hit, until three misses. Best score and a per-event record (hit rate, best streak) are kept in the browser.
+- **Daily war** (start screen): one map, rival, difficulty and fog setting per calendar day, the same for everyone. Your fastest win and a days-won streak are kept in the browser.
 - **Resign** appears in the top bar only while you are behind (fewer troops, or fewer strongholds and not more troops). Click it twice to concede.
 - **Esc** leaves a battle, **P** pauses, **M** mutes.
 
@@ -55,7 +58,7 @@ Ten missions against the four rivals, in four acts and a finale. Each has a hand
 ```bash
 npm install
 npm run dev     # http://127.0.0.1:5360
-npm test        # 50 tests: maps, battle maths, commanders, sieges, campaign, AI-vs-AI wars
+npm test        # 52 tests: maps, battle maths, commanders, sieges, campaign, AI-vs-AI wars
 npm run build   # static site in dist/ (deployed on Vercel from `main`)
 ```
 
@@ -63,13 +66,14 @@ It's a static site built with Vite, TypeScript and Canvas 2D. It has no backend 
 
 ## Verification
 
-- **Automated (`npm test`, 50 passing):**
+- **Automated (`npm test`, 52 passing):**
   - Map generation for every size: connected, point-symmetric and deterministic.
   - Garrison growth, captures, wall bonuses, road ambushes.
   - Battle maths, stances, rout, retreat, rally meter and Charge, including the banked meter carrying between battles.
   - Every commander's effect, special strongholds, road speeds, rally routes, order cooldowns.
   - Fog-of-war visibility and memory.
   - Siege events: who gets the Ram or the Oil, a breach lowering walls for 15 s, Oil kills.
+  - Shield Wall cutting losses taken for 6 s; Arrow Storm costing troops per landed arrow and nothing when all three are stopped.
   - Every campaign mission builds a connected map with both capitals, and finishes.
   - AI-vs-AI wars finishing on every size and difficulty, with and without fog, and every rival personality against every other.
 - **Balance runs (AI vs AI):**
@@ -81,7 +85,8 @@ It's a static site built with Vite, TypeScript and Canvas 2D. It has no backend 
   - Each quick-time event completed with real mouse input. Banner was the exception and used dispatched events, because the automation can't hold a button down.
   - The full tutorial played step by step to "Tutorial complete", including every first-time demo and the final duel.
   - Campaign: mission select and briefing; Mission 1 played to "Mission complete" with stars saved and Mission 2 unlocked; Mission 2's Battering Ram lesson and a real breach; Mission 3's waves and countdown.
-  - Gauntlet: a full run through all eight events to a saved best score; Battering Ram and Boiling Oil drawn and completed in Training demos.
+  - Gauntlet: a full run through every event to a saved best score; Battering Ram, Boiling Oil, Shield Wall and Arrow Storm drawn and completed (every time) in Training demos.
+  - Daily War: today's conditions on the start screen, a game on today's map, and the result and streak on the end screen.
   - Watch mode, settings, fog and the end screen.
   - No console errors.
 - **Human testing:** Zach played several wars (for example 8 strongholds against the Turtle rival) and his feedback drove the tuning: 2.5× quick-time power, 20% longer fights, more Pursuits, the eased Archer ring and the banked Charge.
@@ -92,7 +97,7 @@ It's a static site built with Vite, TypeScript and Canvas 2D. It has no backend 
   - screen readers
   - audio on a wide range of devices
   - the clarity of the tutorial for someone who has never played
-  - the campaign, Gauntlet and siege events by a human (all new and only machine-checked so far)
+  - the campaign, Gauntlet, Daily War and the four newest events by a human (all new and only machine-checked so far)
 
 ## Known limitations
 
@@ -113,7 +118,7 @@ It's a static site built with Vite, TypeScript and Canvas 2D. It has no backend 
   - map depth: special strongholds, road types, rally routes, orders, fog of war
   - commanders and rival personalities
 - **Then** came playtest tweaks, AI-vs-AI watch mode, bigger maps, the guided tutorial and the banked rally meter.
-- **Phase 5:** the siege events (so forts play differently), the Gauntlet and event records, and the ten-mission campaign. Zach asked for the campaign and a high-score training mode and left the design to Claude.
+- **Phase 5:** the siege events (so forts play differently), Shield Wall and Arrow Storm (so stances and the Archer feel different), the Gauntlet and event records, the ten-mission campaign and the Daily War. Zach asked for the campaign and a high-score training mode and left the rest of the design to Claude.
 
 ## Story
 
@@ -190,6 +195,7 @@ There are no third-party assets. Fonts load from Google Fonts (Bebas Neue and Ch
 | `src/render.ts` | Map renderer |
 | `src/tutorial.ts` | The tutorial level and its coach |
 | `src/campaign.ts` | Campaign missions, objectives, scripted moments and stars |
-| `src/records.ts` | Saved records: event mastery, Gauntlet best, campaign stars |
+| `src/records.ts` | Saved records: event mastery, Gauntlet best, campaign stars, Daily War results |
+| `src/daily.ts` | Today's Daily War, derived from the date |
 | `src/sound.ts` | Synthesized sound effects and music |
 | `src/main.ts` | Screens, input, HUD and the game loop |
