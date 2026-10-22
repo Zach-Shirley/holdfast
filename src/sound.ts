@@ -105,7 +105,10 @@ export type Sfx =
   | 'retreat'
   | 'victory'
   | 'defeat'
-  | 'click';
+  | 'click'
+  | 'ram'
+  | 'gate'
+  | 'sizzle';
 
 export function sfx(name: Sfx) {
   if (!ctx || audioSettings.muted) return;
@@ -177,6 +180,19 @@ export function sfx(name: Sfx) {
       break;
     case 'click':
       tone('square', 900, 900, 0.03, 0.05);
+      break;
+    case 'ram':
+      // A heavy thud on the gate.
+      tone('sine', 90, 40, 0.25, 0.6);
+      burst('lowpass', 500, 150, 0.2, 0.35);
+      break;
+    case 'gate':
+      // Splintering wood.
+      burst('bandpass', 900, 300, 0.5, 0.4, 0, 2);
+      tone('sawtooth', 120, 50, 0.45, 0.2, 0.02);
+      break;
+    case 'sizzle':
+      burst('highpass', 3000, 6000, 0.12, 0.12);
       break;
   }
 }

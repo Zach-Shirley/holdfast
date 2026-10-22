@@ -1,7 +1,8 @@
 import { NODE_STATS } from './map';
 import { OWNER_COLOR, OWNER_DARK, OWNER_LIGHT } from './render';
+import { gauntletBest, mastery, recordEvent, saveGauntlet } from './records';
 import { setBattleAmbience, sfx, spearWhoosh, volleyTone, type Voice } from './sound';
-import { STANCES, activeBattles, battleName, battleNodes, canSee, pursuitReady, getBattle, inDuel, isRouting, sideDefense, sideOf, specialNear, type Battle, type Game, type Owner, type QteKind } from './sim';
+import { STANCES, activeBattles, battleName, battleNodes, canSee, pursuitReady, getBattle, inDuel, isRouting, sideDefense, sideOf, siegeRole, specialNear, type Battle, type Game, type Owner, type QteKind } from './sim';
 
 /** Everything the battle view can throw at you: the four basics plus situational events. */
 export type ViewKind = QteKind | 'duel' | 'pursuit';
@@ -27,6 +28,17 @@ const SLASH_TOLERANCE = 58;
 const BANNER_TIME = 2.6;
 const BANNER_NEED = 1.0;
 const BANNER_R = 60;
+/** Battering Ram (attacking walls): click the gate on three beats. */
+const RAM_FIRST = 0.95;
+const RAM_BEAT = 0.62;
+const RAM_WINDOW = 0.16;
+const RAM_GATE_W = 120;
+const RAM_GATE_H = 150;
+/** Boiling Oil (holding walls): hold the button and pour over each ladder before they top the wall. */
+const OIL_TIME = 2.8;
+const OIL_NEED = 0.22;
+const OIL_TOL = 46;
+const OIL_REACH = 30;
 const GAP = 0.45;
 const FIRST = 0.8;
 
@@ -36,7 +48,9 @@ type Qte =
   | { kind: 'slash'; t: number; ax: number; ay: number; bx: number; by: number; grabbed: boolean; trail: { x: number; y: number }[] }
   | { kind: 'banner'; t: number; held: number; phase: number }
   | { kind: 'duel'; t: number; fireAt: number; enemy: number; x: number; y: number }
-  | { kind: 'pursuit'; t: number; runners: { x: number; y: number; vx: number; vy: number; hit: boolean }[] };
+  | { kind: 'pursuit'; t: number; runners: { x: number; y: number; vx: number; vy: number; hit: boolean }[] }
+  | { kind: 'ram'; t: number; x: number; y: number; next: number; struck: number }
+  | { kind: 'oil'; t: number; y: number; x0: number; x1: number; ladders: { x: number; oil: number }[]; drops: { x: number; y: number; t: number }[] };
 
 interface Floater {
   text: string;
@@ -106,6 +120,28 @@ export const DRILLS: Record<ViewKind, { name: string; color: string; steps: stri
     effect: 'Winner kills about 15% of the loser (plus 3) and gains big momentum; the loser reels.',
     tip: 'Keep your cursor near the centre while waiting. On Normal the enemy reacts in about half a second.',
   },
+  ram: {
+    name: 'Battering Ram',
+    color: '#d9a066',
+    steps: [
+      'Only when you storm a walled stronghold (a fort or a capital you are attacking).',
+      'A ring closes on the gate three times, in a steady rhythm.',
+      'Click the gate each time the ring touches it. Three clean beats break it.',
+    ],
+    effect: 'Breaches the gate: the defenders lose 0.3 of their wall bonus for 15 s, and about 8% of them are crushed.',
+    tip: 'It is a rhythm: after the first beat, the next two come at the same pace. Listen for the thuds.',
+  },
+  oil: {
+    name: 'Boiling Oil',
+    color: '#ff7b39',
+    steps: [
+      'Only when you hold the walls (defending a fort or capital you own).',
+      'Enemy ladders climb your wall. Press and hold anywhere on the wall to pour.',
+      'Keep holding and sweep along the wall over every ladder (any order) until each one is scalded.',
+    ],
+    effect: 'Kills about 20% of the attackers (plus 2–3) and steadies your line.',
+    tip: 'Pause a moment over each ladder: it needs a short pour. Stay on the wall line.',
+  },
   pursuit: {
     name: 'Pursuit',
     color: '#9ff0b5',
@@ -127,6 +163,8 @@ export const SHORT: Record<ViewKind, string> = {
   banner: 'Hold the mouse button down on the banner until its ring fills.',
   duel: 'The enemy commander is here. Wait for the NOW! signal, then click it first. Clicking early loses.',
   pursuit: 'The enemy is fleeing. Click the runners before they escape.',
+  ram: 'Click the gate each time the closing ring touches it: three beats in rhythm.',
+  oil: 'Hold the button on the wall and sweep over every ladder until each is scalded.',
 };
 
 /** Stand-in battle drawn behind the Training screen. */
@@ -223,6 +261,12 @@ export class BattleView {
   /** Demo mode: a ghost cursor performs the drill. */
   private demo = false;
   private pstats = { hit: 0, miss: 0, streak: 0 };
+  /** Training's Gauntlet: random events that speed up with every hit, until three misses. */
+  private gauntlet: { score: number; lives: number; hits: number; streak: number; speed: number; over: boolean; record: boolean; last: string } | null = null;
+  /** Gauntlet speed-up applied on top of the player's quick-time speed setting. */
+  private get speedMul() {
+    return this.gauntlet ? this.gauntlet.speed : 1;
+  }
   private clicks: { x: number; y: number; t: number }[] = [];
   private lastHint = -9;
   /** Tutorial: demonstrate each event the first time it comes up, with the battle frozen. */
@@ -285,10 +329,11 @@ export class BattleView {
     });
     this.els.practice.addEventListener('click', (e) => {
       const el = (e.target as HTMLElement).closest<HTMLElement>('[data-kind],[data-act]');
-      if (!el || !this.practice) return;
-      if (el.dataset.kind) this.showPractice(el.dataset.kind as ViewKind, true);
-      else if (el.dataset.act === 'demo') this.showPractice(this.practice, true);
-      else if (el.dataset.act === 'try') this.showPractice(this.practice, false);
+      if (!el || (!this.practice && el.dataset.act !== 'restart')) return;
+      if (el.dataset.kind === 'gauntlet' || el.dataset.act === 'restart') this.showGauntlet();
+      else if (el.dataset.kind) this.showPractice(el.dataset.kind as ViewKind, true);
+      else if (el.dataset.act === 'demo' && this.practice) this.showPractice(this.practice, true);
+      else if (el.dataset.act === 'try' && this.practice) this.showPractice(this.practice, false);
       else if (el.dataset.act === 'back') this.exitPractice();
     });
     window.addEventListener('keydown', (e) => {
@@ -360,6 +405,7 @@ export class BattleView {
     setBattleAmbience(false);
     this.battleId = null;
     this.practice = null;
+    this.gauntlet = null;
     this.demo = false;
     this.qte = null;
     this.root.classList.remove('practicing');
@@ -372,7 +418,8 @@ export class BattleView {
 
   /** Training screen: practise one quick-time event on repeat, or watch a ghost cursor do it. */
   showPractice(kind: ViewKind, demo = false) {
-    if (kind !== this.practice || demo !== this.demo) this.pstats = { hit: 0, miss: 0, streak: 0 };
+    if (kind !== this.practice || demo !== this.demo || this.gauntlet) this.pstats = { hit: 0, miss: 0, streak: 0 };
+    this.gauntlet = null;
     this.battleId = null;
     this.practice = kind;
     this.demo = demo;
@@ -389,6 +436,14 @@ export class BattleView {
     this.renderPracticePanel();
   }
 
+  /** Training: the Gauntlet high-score run. */
+  showGauntlet() {
+    this.showPractice('volley', false);
+    this.gauntlet = { score: 0, lives: 3, hits: 0, streak: 0, speed: 1, over: false, record: false, last: '' };
+    this.gap = 1.4;
+    this.renderPracticePanel();
+  }
+
   exitPractice() {
     this.hide();
     this.hooks.onPracticeExit?.();
@@ -398,9 +453,28 @@ export class BattleView {
     const kind = this.practice;
     if (!kind) return;
     const d = DRILLS[kind];
-    const tabs = (Object.keys(DRILLS) as ViewKind[])
-      .map((k) => `<button data-kind="${k}" class="${k === kind ? 'on' : ''}" style="--c:${DRILLS[k].color}">${DRILLS[k].name}</button>`)
-      .join('');
+    const tabs =
+      (Object.keys(DRILLS) as ViewKind[])
+        .map((k) => `<button data-kind="${k}" class="${k === kind && !this.gauntlet ? 'on' : ''}" style="--c:${DRILLS[k].color}">${DRILLS[k].name}</button>`)
+        .join('') + `<button data-kind="gauntlet" class="gauntlet-tab ${this.gauntlet ? 'on' : ''}" style="--c:#ffd166">★ Gauntlet</button>`;
+    if (this.gauntlet) {
+      const gt = this.gauntlet;
+      const hearts = '♥'.repeat(Math.max(0, gt.lives)) + '<i>♥</i>'.repeat(3 - Math.max(0, gt.lives));
+      this.els.practice.innerHTML = `
+      <div class="pr-head">TRAINING</div>
+      <div class="pr-tabs">${tabs}</div>
+      <h2 style="color:#ffd166">Gauntlet</h2>
+      <div class="gt-score">${gt.score.toLocaleString()}</div>
+      <div class="gt-row"><span class="gt-lives">${hearts}</span><span>Speed <b>×${gt.speed.toFixed(2)}</b></span><span>Streak <b>${gt.streak}</b></span></div>
+      <p class="gt-best">Best: <b>${gauntletBest.score.toLocaleString()}</b>${gauntletBest.hits ? ` (${gauntletBest.hits} hits, reached ×${gauntletBest.speed.toFixed(2)})` : ''}</p>
+      ${gt.over
+        ? `<div class="gt-over"><h3>${gt.record ? 'New best!' : 'Run over'}</h3><p>${gt.hits} hits, top speed ×${gt.speed.toFixed(2)}. Last miss: ${gt.last}.</p><button class="primary" data-act="restart">Run it again</button></div>`
+        : `<p>Every event, in random order. Each hit speeds things up and is worth more; a streak adds a bonus. Three misses and the run ends.</p><p class="pr-tip">Pursuit needs at least 2 of 3 runners. Duel rivals get quicker too.</p>`}
+      <button class="pr-back" data-act="back">Back to menu <span>Esc</span></button>`;
+      return;
+    }
+    const rec = mastery[kind];
+    const recLine = rec && rec.hit + rec.miss > 0 ? `<p class="pr-record">Your record: <b>${Math.round((100 * rec.hit) / (rec.hit + rec.miss))}%</b> of ${rec.hit + rec.miss} · best streak <b>${rec.best}</b></p>` : '';
     const total = this.pstats.hit + this.pstats.miss;
     const status = this.demo
       ? '<p class="pr-status">Watching: the ghost cursor shows exactly when and where to click.</p>'
@@ -419,6 +493,7 @@ export class BattleView {
         <button data-act="try" class="${!this.demo ? 'on' : ''}">Try it yourself</button>
       </div>
       ${status}
+      ${recLine}
       <button class="pr-back" data-act="back">Back to menu <span>Esc</span></button>`;
   }
 
@@ -443,6 +518,10 @@ export class BattleView {
 
   /** Which event comes next: duels when both commanders are here, pursuit when the enemy routs, otherwise weighted by stance. */
   private nextKind(g: Game | null): ViewKind {
+    if (this.gauntlet) {
+      const all = (Object.keys(DRILLS) as ViewKind[]).filter((k) => k !== this.last);
+      return all[Math.floor(Math.random() * all.length)];
+    }
     if (this.practice) return this.practice;
     if (this.lesson) return this.lesson;
     if (this.forceKind) {
@@ -459,8 +538,10 @@ export class BattleView {
     if (this.last !== 'pursuit' && (routing ? Math.random() < 0.6 : pursuitReady(b, 0) && Math.random() < 0.4)) return 'pursuit';
     const stance = sideOf(b, 0)?.stance;
     const favoured: QteKind | null = stance === 'assault' ? 'slash' : stance === 'hold' ? 'parry' : stance === 'skirmish' ? 'volley' : null;
-    const pool = (['volley', 'parry', 'slash', 'banner'] as QteKind[]).filter((k) => k !== this.last);
-    const weights = pool.map((k) => (k === favoured ? 2.5 : 1));
+    const role = siegeRole(g, b, 0);
+    const siege: QteKind[] = role === 'attacker' ? ['ram'] : role === 'defender' ? ['oil'] : [];
+    const pool = (['volley', 'parry', 'slash', 'banner', ...siege] as QteKind[]).filter((k) => k !== this.last);
+    const weights = pool.map((k) => (k === favoured ? 2.5 : k === 'ram' || k === 'oil' ? 1.6 : 1));
     let r = Math.random() * weights.reduce((p, q) => p + q, 0);
     for (let i = 0; i < pool.length; i++) if ((r -= weights[i]) <= 0) return pool[i];
     return pool[0];
@@ -485,7 +566,11 @@ export class BattleView {
       const c = this.center();
       this.lastDuel = this.now;
       // In training the "enemy commander" reacts like a Normal AI.
-      const enemy = this.practice ? 0.5 * (0.85 + Math.random() * 0.3) : this.hooks.duelReaction();
+      const enemy = this.gauntlet
+        ? Math.max(0.26, 0.55 - 0.01 * this.gauntlet.hits) * (0.9 + Math.random() * 0.2)
+        : this.practice
+          ? 0.5 * (0.85 + Math.random() * 0.3)
+          : this.hooks.duelReaction();
       this.qte = { kind, t: 0, fireAt: 1.0 + Math.random() * 1.4, enemy, x: c.x + (Math.random() - 0.5) * 160, y: c.y + (Math.random() - 0.5) * 80 };
     } else if (kind === 'pursuit') {
       const c = this.center();
@@ -500,14 +585,24 @@ export class BattleView {
       };
     } else if (kind === 'volley') {
       this.qte = { kind, t: 0, x: rx(), y: ry() };
-      this.voice = volleyTone(this.volleyHit / this.timeScale);
+      this.voice = volleyTone(this.volleyHit / (this.timeScale * this.speedMul));
     }
     else if (kind === 'parry') {
       this.qte = { kind, t: 0, ang: Math.random() * Math.PI * 2 };
-      this.voice = spearWhoosh(PARRY_TIME / this.timeScale);
+      this.voice = spearWhoosh(PARRY_TIME / (this.timeScale * this.speedMul));
     }
     else if (kind === 'banner') this.qte = { kind, t: 0, held: 0, phase: Math.random() * 10 };
-    else {
+    else if (kind === 'ram') {
+      const c = this.center();
+      this.qte = { kind, t: 0, x: c.x - 60 + (Math.random() - 0.5) * 80, y: c.y + 10, next: 0, struck: -9 };
+    } else if (kind === 'oil') {
+      const a = this.area();
+      const x0 = a.x0 + 40;
+      const x1 = a.x1 - 40;
+      // Three ladders, spread out along the wall.
+      const slots = [0.15, 0.5, 0.85].map((f) => x0 + (x1 - x0) * (f + (Math.random() - 0.5) * 0.16));
+      this.qte = { kind, t: 0, y: a.y0 + (a.y1 - a.y0) * 0.38, x0, x1, ladders: slots.map((x) => ({ x, oil: 0 })), drops: [] };
+    } else {
       const c = this.center();
       const ang = Math.random() * Math.PI * 2;
       const len = 120 + Math.random() * 60;
@@ -530,6 +625,29 @@ export class BattleView {
     else if (kind !== 'pursuit') sfx('hit');
     if (this.lesson) {
       this.floaters.push({ text: kind === 'pursuit' ? `${hits} / 3 caught` : success ? 'Like that!' : 'Miss', x, y, t: 0, good: success });
+    } else if (this.gauntlet) {
+      const gt = this.gauntlet;
+      const ok = kind === 'pursuit' ? hits >= 2 : success;
+      if (ok) {
+        gt.hits++;
+        gt.streak++;
+        const pts = Math.round(100 * gt.speed * (kind === 'pursuit' ? hits / 3 : 1)) + 10 * Math.min(gt.streak, 20);
+        gt.score += pts;
+        gt.speed = Math.min(2.4, 1 + 0.05 * gt.hits);
+        this.floaters.push({ text: `+${pts}`, x, y, t: 0, good: true });
+      } else {
+        gt.lives--;
+        gt.streak = 0;
+        this.floaters.push({ text: gt.lives > 0 ? `Miss · ${gt.lives} left` : 'Out!', x, y, t: 0, good: false });
+        this.shake = 0.3;
+        if (gt.lives <= 0) {
+          gt.over = true;
+          gt.record = saveGauntlet(gt.score, gt.hits, gt.speed);
+          sfx(gt.record ? 'victory' : 'defeat');
+        }
+      }
+      gt.last = DRILLS[kind].name;
+      this.renderPracticePanel();
     } else if (this.practice) {
       if (!this.demo) {
         this.pstats[success ? 'hit' : 'miss']++;
@@ -546,6 +664,8 @@ export class BattleView {
       if (kind === 'duel') this.flash = 0.3;
     }
     if (!success && reason) this.floaters.push({ text: reason, x, y: y + 34, t: 0, good: false, small: true });
+    // Mastery records count real attempts: battles, Training and the Gauntlet (never demos).
+    if (!this.demo && !this.lesson && !this.spectating) recordEvent(kind, kind === 'pursuit' ? hits >= 2 : success);
     if (!success && kind === 'parry') this.shake = 0.35;
     this.qte = null;
     this.gap = this.practice || this.lesson ? 0.7 : GAP;
@@ -596,6 +716,20 @@ export class BattleView {
     } else if (q.kind === 'banner') {
       const p = this.bannerPos(q);
       if (Math.hypot(x - p.x, y - p.y) > BANNER_R) this.hint('Hold the button down on the banner');
+    } else if (q.kind === 'ram') {
+      if (Math.abs(x - q.x) > RAM_GATE_W / 2 + 30 || Math.abs(y - q.y) > RAM_GATE_H / 2 + 30) return this.hint('Click the gate');
+      const beat = RAM_FIRST + q.next * RAM_BEAT;
+      if (Math.abs(q.t - beat) > RAM_WINDOW) return this.resolve(false, q.x, q.y, q.t < beat ? 'Too early: strike as the ring meets the gate' : 'Off the beat: strike as the ring meets the gate');
+      q.next++;
+      q.struck = q.t;
+      this.shake = 0.15;
+      this.clicks.push({ x: q.x, y: q.y, t: 0 });
+      if (q.next >= 3) {
+        sfx('gate');
+        this.resolve(true, q.x, q.y);
+      } else sfx('ram');
+    } else if (q.kind === 'oil') {
+      if (Math.abs(y - q.y) > OIL_TOL) this.hint('Press on the wall itself');
     } else if (q.kind === 'duel') {
       if (q.t < q.fireAt) return this.resolve(false, q.x, q.y, 'False start: wait for the NOW! signal');
       if (Math.hypot(x - q.x, y - q.y) > DUEL_TARGET_R + 20) return this.hint('Click the NOW! target');
@@ -676,9 +810,10 @@ export class BattleView {
   }
 
   private tickQte(rawDt: number, g: Game | null) {
-    const dt = rawDt * this.timeScale;
+    const dt = rawDt * this.timeScale * this.speedMul;
     if (!this.qte) {
       if (this.demo) this.mouse.down = false;
+      if (this.gauntlet?.over) return;
       this.gap -= dt;
       if (this.gap <= 0) this.spawn(g);
       return;
@@ -707,7 +842,28 @@ export class BattleView {
       const c = this.center();
       this.resolve(false, c.x, c.y, 'Too slow: click the spear before it hits your shield');
     } else if (q.kind === 'slash' && q.t >= SLASH_TIME) this.resolve(false, q.bx, q.by, 'Too slow: press the dot, then drag to the ring');
-    else if (q.kind === 'banner') {
+    else if (q.kind === 'ram' && q.t > RAM_FIRST + q.next * RAM_BEAT + RAM_WINDOW) this.resolve(false, q.x, q.y, q.next ? 'Lost the rhythm: keep striking on the beat' : 'Missed the beat: click the gate as the ring meets it');
+    else if (q.kind === 'oil') {
+      const pouring = this.mouse.down && Math.abs(this.mouse.y - q.y) <= OIL_TOL && this.mouse.x >= q.x0 - 20 && this.mouse.x <= q.x1 + 20;
+      if (pouring) {
+        if (Math.random() < 0.6) q.drops.push({ x: this.mouse.x + (Math.random() - 0.5) * 14, y: q.y + 6, t: 0 });
+        for (const l of q.ladders) {
+          if (l.oil >= OIL_NEED || Math.abs(this.mouse.x - l.x) > OIL_REACH) continue;
+          l.oil += dt;
+          if (l.oil >= OIL_NEED) {
+            sfx('sizzle');
+            this.clicks.push({ x: l.x, y: q.y + 40, t: 0 });
+          }
+        }
+      }
+      for (const d of q.drops) {
+        d.t += dt;
+        d.y += 380 * dt;
+      }
+      q.drops = q.drops.filter((d) => d.t < 0.6);
+      if (q.ladders.every((l) => l.oil >= OIL_NEED)) this.resolve(true, (q.x0 + q.x1) / 2, q.y);
+      else if (q.t >= OIL_TIME) this.resolve(false, (q.x0 + q.x1) / 2, q.y, `The ladders reached the top: ${q.ladders.filter((l) => l.oil >= OIL_NEED).length}/3 scalded`);
+    } else if (q.kind === 'banner') {
       const p = this.bannerPos(q);
       if (this.mouse.down && Math.hypot(this.mouse.x - p.x, this.mouse.y - p.y) <= BANNER_R) {
         q.held += dt;
@@ -766,6 +922,24 @@ export class BattleView {
       if (q.t > 0.35 && !this.mouse.down) {
         this.mouse.down = true;
         this.clicks.push({ x: this.mouse.x, y: this.mouse.y, t: 0 });
+      }
+    } else if (q.kind === 'ram') {
+      glide(q.x, q.y, 10);
+      if (q.next < 3 && q.t >= RAM_FIRST + q.next * RAM_BEAT - 0.02) {
+        click(q.x, q.y);
+        this.press();
+      }
+    } else if (q.kind === 'oil') {
+      // Press on the wall, then pour over each ladder in turn.
+      const todo = q.ladders.find((l) => l.oil < OIL_NEED);
+      if (!todo) return;
+      if (q.t < 0.35) glide(q.ladders[0].x, q.y, 12);
+      else {
+        if (!this.mouse.down) {
+          this.mouse.down = true;
+          this.clicks.push({ x: this.mouse.x, y: this.mouse.y, t: 0 });
+        }
+        glide(todo.x, q.y, 9);
       }
     } else if (q.kind === 'duel') {
       // Wait near the centre, then click a quarter-second after the signal.
@@ -1171,6 +1345,135 @@ export class BattleView {
         ctx.fillStyle = '#fff';
         ctx.fillText('NOW!', q.x, q.y + 16);
       }
+    } else if (q.kind === 'ram') {
+      const gx = q.x - RAM_GATE_W / 2;
+      const gy = q.y - RAM_GATE_H / 2;
+      // Wall and gate.
+      ctx.fillStyle = 'rgba(52,42,35,0.97)';
+      ctx.fillRect(gx - 90, gy - 30, RAM_GATE_W + 180, RAM_GATE_H + 30);
+      ctx.fillStyle = '#5a3d26';
+      ctx.strokeStyle = '#d9a066';
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.roundRect(gx, gy, RAM_GATE_W, RAM_GATE_H, [RAM_GATE_W / 2, RAM_GATE_W / 2, 0, 0]);
+      ctx.fill();
+      ctx.stroke();
+      // Cracks for each beat landed.
+      ctx.strokeStyle = '#1b120c';
+      ctx.lineWidth = 3;
+      for (let i = 0; i < q.next; i++) {
+        const cx = q.x + (i - 1) * 26;
+        ctx.beginPath();
+        ctx.moveTo(cx, gy + 30);
+        ctx.lineTo(cx + 10, gy + 60);
+        ctx.lineTo(cx - 6, gy + 90);
+        ctx.lineTo(cx + 8, gy + 120);
+        ctx.stroke();
+      }
+      // The ram swings back between beats and strikes on each one.
+      const beat = RAM_FIRST + q.next * RAM_BEAT;
+      const since = q.t - q.struck;
+      const toBeat = Math.max(0, beat - q.t);
+      const swing = since < 0.12 ? 0 : Math.min(1, toBeat / RAM_BEAT);
+      const rx = q.x + RAM_GATE_W / 2 + 6 + swing * 90;
+      ctx.fillStyle = '#7b5532';
+      ctx.strokeStyle = '#3a2716';
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.roundRect(rx, q.y + 10, 170, 30, 12);
+      ctx.fill();
+      ctx.stroke();
+      ctx.fillStyle = '#9aa0a6';
+      ctx.fillRect(rx - 4, q.y + 6, 16, 38);
+      // The timing ring for the next beat.
+      if (q.next < 3) {
+        const lead = Math.min(1, toBeat / RAM_BEAT);
+        const inWin = Math.abs(q.t - beat) <= RAM_WINDOW;
+        ctx.strokeStyle = inWin ? '#fff' : 'rgba(255,255,255,0.7)';
+        ctx.lineWidth = 3;
+        ctx.beginPath();
+        ctx.ellipse(q.x, q.y, RAM_GATE_W / 2 + 6 + lead * 120, RAM_GATE_H / 2 + 6 + lead * 120, 0, 0, Math.PI * 2);
+        ctx.stroke();
+        if (inWin) {
+          ctx.fillStyle = 'rgba(217,160,102,0.25)';
+          ctx.fillRect(gx, gy, RAM_GATE_W, RAM_GATE_H);
+        }
+      }
+      this.label(`BATTERING RAM · click the gate on the beat (${q.next}/3)`, q.x, gy + RAM_GATE_H + 34);
+    } else if (q.kind === 'oil') {
+      const top = q.y;
+      // The wall you stand on, with battlements.
+      ctx.fillStyle = 'rgba(70,58,50,0.92)';
+      ctx.fillRect(q.x0 - 30, top - 16, q.x1 - q.x0 + 60, 32);
+      ctx.fillStyle = 'rgba(40,32,28,0.9)';
+      for (let x = q.x0 - 30; x < q.x1 + 30; x += 34) ctx.fillRect(x, top - 30, 20, 14);
+      ctx.fillStyle = 'rgba(46,37,32,0.96)';
+      ctx.fillRect(q.x0 - 30, top + 16, q.x1 - q.x0 + 60, 200);
+      // Ladders climbing toward the top as time runs out.
+      const climb = Math.min(1, q.t / OIL_TIME);
+      for (const l of q.ladders) {
+        const done = l.oil >= OIL_NEED;
+        const ly = top + 16 + (1 - climb) * 150;
+        ctx.strokeStyle = done ? 'rgba(120,90,60,0.5)' : '#b88a55';
+        ctx.lineWidth = 4;
+        ctx.beginPath();
+        ctx.moveTo(l.x - 14, top + 220);
+        ctx.lineTo(l.x - 14, ly);
+        ctx.moveTo(l.x + 14, top + 220);
+        ctx.lineTo(l.x + 14, ly);
+        for (let y = ly + 12; y < top + 220; y += 22) {
+          ctx.moveTo(l.x - 14, y);
+          ctx.lineTo(l.x + 14, y);
+        }
+        ctx.stroke();
+        if (!done) {
+          // A climber at the top of the ladder.
+          ctx.fillStyle = OWNER_DARK[1];
+          ctx.strokeStyle = OWNER_COLOR[1];
+          ctx.lineWidth = 2;
+          ctx.beginPath();
+          ctx.roundRect(l.x - 8, ly - 4, 16, 22, 6);
+          ctx.fill();
+          ctx.stroke();
+          ctx.fillStyle = OWNER_LIGHT[1];
+          ctx.beginPath();
+          ctx.arc(l.x, ly - 10, 7, 0, Math.PI * 2);
+          ctx.fill();
+          // Pour progress.
+          ctx.strokeStyle = '#ff7b39';
+          ctx.lineWidth = 4;
+          ctx.beginPath();
+          ctx.arc(l.x, top, OIL_REACH, -Math.PI / 2, -Math.PI / 2 + (l.oil / OIL_NEED) * Math.PI * 2);
+          ctx.stroke();
+          ctx.strokeStyle = 'rgba(255,123,57,0.35)';
+          ctx.lineWidth = 2;
+          ctx.beginPath();
+          ctx.arc(l.x, top, OIL_REACH, 0, Math.PI * 2);
+          ctx.stroke();
+        } else {
+          ctx.fillStyle = 'rgba(255,170,90,0.6)';
+          ctx.font = '700 13px "Chakra Petch", sans-serif';
+          ctx.textAlign = 'center';
+          ctx.fillText('scalded', l.x, top + 40);
+        }
+      }
+      for (const d of q.drops) {
+        ctx.fillStyle = `rgba(255,140,60,${1 - d.t / 0.6})`;
+        ctx.beginPath();
+        ctx.arc(d.x, d.y, 4, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      // Cauldron under the cursor while pouring.
+      if (this.mouse.down && Math.abs(this.mouse.y - top) <= OIL_TOL) {
+        ctx.fillStyle = '#2b2b2b';
+        ctx.strokeStyle = '#ff7b39';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.arc(this.mouse.x, top - 4, 14, 0, Math.PI);
+        ctx.fill();
+        ctx.stroke();
+      }
+      this.label('BOILING OIL · hold on the wall and sweep over every ladder', (q.x0 + q.x1) / 2, top - 52);
     } else if (q.kind === 'pursuit') {
       for (const r of q.runners) {
         if (r.hit) continue;

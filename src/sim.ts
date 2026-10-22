@@ -20,7 +20,12 @@ export const MOMENTUM_DECAY = 0.06;
 /** War clock: when it runs out, whoever holds more strongholds wins (troops break ties). */
 export const MATCH_TIME = 720;
 
-export type QteKind = 'volley' | 'parry' | 'slash' | 'banner';
+export type QteKind = 'volley' | 'parry' | 'slash' | 'banner' | 'ram' | 'oil';
+/** Siege events: the Ram for attackers of a walled stronghold, Boiling Oil for its defenders. */
+export const SIEGE_KINDS: QteKind[] = ['ram', 'oil'];
+/** A breached gate lowers the walls by this much, for this long. */
+export const BREACH = 0.3;
+export const BREACH_TIME = 15;
 
 /** How a column fights. Chosen when sending troops; garrisons have no stance. */
 export type Stance = 'assault' | 'hold' | 'skirmish';
@@ -124,6 +129,8 @@ export interface Battle {
   winner: Owner | null;
   /** Largest number of troops each owner had in the fight (for the end summary). */
   peak: Record<number, number>;
+  /** The Ram cracked the gate: walls are lower until this time. */
+  breachUntil?: number;
 }
 
 export interface GameEvent {
@@ -369,7 +376,14 @@ export function sideOf(b: Battle, owner: Owner): Side | undefined {
 /** Defence multiplier for a side: the holder of a node fights from its walls. */
 export function sideDefense(g: Game, b: Battle, s: Side): number {
   if (b.nodeId === null || g.nodes[b.nodeId].owner !== s.owner) return 1;
-  return NODE_STATS[g.map.nodes[b.nodeId].kind].defense + (commanderOf(g, s.owner) === 'ironwall' ? 0.2 : 0);
+  const walls = NODE_STATS[g.map.nodes[b.nodeId].kind].defense + (commanderOf(g, s.owner) === 'ironwall' ? 0.2 : 0);
+  return (b.breachUntil ?? -1) > g.time ? Math.max(1, walls - BREACH) : walls;
+}
+
+/** In a battle at a walled stronghold: is `owner` storming the walls or holding them? */
+export function siegeRole(g: Game, b: Battle, owner: Owner): 'attacker' | 'defender' | null {
+  if (b.nodeId === null || NODE_STATS[g.map.nodes[b.nodeId].kind].defense <= 1) return null;
+  return g.nodes[b.nodeId].owner === owner ? 'defender' : 'attacker';
 }
 
 /** A side that has fallen below a quarter of its peak strength breaks and takes extra losses. */
@@ -600,6 +614,15 @@ function qteEffect(g: Game, battleId: number, owner: Player, kind: QteKind, succ
       bump(success ? 0.3 * QTE_POWER : -0.1);
       if (success && cmd === 'duelist') return `Line broken: ${kill(0.05)} down`;
       return success ? 'Line broken: momentum up' : 'Slash fumbled';
+    case 'ram':
+      // Three beats on the gate: a clean rhythm cracks it open for a while.
+      if (!success) return 'The ram glanced off';
+      b.breachUntil = g.time + BREACH_TIME;
+      return `Gate breached: walls down, ${kill(0.03)} crushed`;
+    case 'oil':
+      if (!success) return 'The oil missed the ladders';
+      bump(0.05 * QTE_POWER);
+      return `Boiling oil! ${kill(0.08)} scalded`;
     case 'banner':
       if (!success) return 'Banner lost';
       bump(0.15 * QTE_POWER);

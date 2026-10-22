@@ -26,6 +26,7 @@ import {
   type Game,
   type Player,
   type QteKind,
+  siegeRole,
 } from './sim';
 
 export type Difficulty = 'easy' | 'normal' | 'hard';
@@ -470,8 +471,11 @@ function commander(g: Game, ai: AiState, dt: number) {
   ai.qteT -= dt;
   if (ai.qteT <= 0) {
     ai.qteT = L.qteEvery * (0.8 + ai.rng() * 0.4);
-    const kind = QTE_KINDS[Math.floor(ai.rng() * QTE_KINDS.length)];
     const b = getBattle(g, g.presence[me]);
+    // At walls, the siege event for its role joins the pool (as it does for the player).
+    const role = b ? siegeRole(g, b, me) : null;
+    const pool = role ? [...QTE_KINDS, role === 'attacker' ? 'ram' : 'oil'] as QteKind[] : QTE_KINDS;
+    const kind = pool[Math.floor(ai.rng() * pool.length)];
     // Pursuits come up when the enemy is beaten down, for the AI as for the player.
     if (b && pursuitReady(b, me) && ai.rng() < 0.4) {
       const hits = [0, 1, 2].filter(() => ai.rng() < L.success).length;

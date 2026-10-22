@@ -1134,3 +1134,56 @@ button.resign {
 button.resign:hover {
   background: rgba(255, 90, 90, 0.15);
 }
+
+/* ---------- Gauntlet and records ---------- */
+.pr-tabs .gauntlet-tab {
+  grid-column: span 2;
+  font-weight: 700;
+}
+.gt-score {
+  font-family: "Bebas Neue", sans-serif;
+  font-size: 64px;
+  line-height: 1;
+  color: #ffd166;
+  letter-spacing: 0.04em;
+}
+.gt-row {
+  display: flex;
+  gap: 14px;
+  align-items: center;
+  margin: 6px 0 10px;
+  font-size: 14px;
+  color: var(--muted);
+}
+.gt-row b {
+  color: var(--text);
+}
+.gt-lives {
+  color: #ff5f74;
+  font-size: 20px;
+  letter-spacing: 2px;
+}
+.gt-lives i {
+  color: rgba(255, 255, 255, 0.15);
+  font-style: normal;
+}
+.gt-best,
+.pr-record {
+  font-size: 13px;
+  color: var(--muted);
+}
+.gt-best b,
+.pr-record b {
+  color: #ffd166;
+}
+.gt-over {
+  padding: 12px 14px;
+  margin: 8px 0 12px;
+  border: 1px solid #ffd166;
+  border-radius: 14px;
+  background: rgba(255, 209, 102, 0.06);
+}
+.gt-over h3 {
+  margin: 0 0 4px;
+  color: #ffd166;
+}
