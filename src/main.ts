@@ -5,6 +5,8 @@ import { NODE_STATS, ROAD_SPEED, SPECIALS, WORLD_H, WORLD_W, generateMap, type G
 import { MapRenderer, OWNER_COLOR, applyPalette, nodeRadius, paintBackground } from './render';
 import { prefs, savePrefs } from './prefs';
 import { Tutorial, setupTutorialGame, tutorialMap } from './tutorial';
+import { CampaignRun, MISSIONS, createMissionGame, starsFor, type Mission } from './campaign';
+import { campaignStars, saveStars } from './records';
 import { applyVolume, audioSettings, audioState, initAudio, setIntensity, setMusic, sfx } from './sound';
 import {
   ABILITIES,
@@ -55,6 +57,10 @@ const settings: Settings = { nodes: 8, difficulty: 'normal', seed: randomSeed(),
 let spectating = false;
 /** The tutorial level, when it is running. */
 let tutorial: Tutorial | null = null;
+/** The campaign mission being played, if any. */
+let campaign: CampaignRun | null = null;
+/** The mission picked on the campaign screen. */
+let campaignPick = 0;
 let ai0: AiState | null = null;
 let leftRival: Personality = 'turtle';
 let watchSpeed = 1;
@@ -140,7 +146,7 @@ app.innerHTML = `
       </div>
       <h3 class="gap">Your commander</h3>
       <div class="commanders" id="commanders">${PLAYABLE.map((c) => `<button data-c="${c}"><b>${COMMANDERS[c].label}</b><i>${COMMANDERS[c].title}</i><span>${COMMANDERS[c].desc}</span></button>`).join('')}</div>
-      <div class="actions"><button class="primary" id="start">Start war</button><button class="primary alt" id="tutorial">Tutorial</button><button id="training">Training: learn the quick-time events</button><button id="setup-help">How to play</button><button id="setup-settings">Settings</button></div>
+      <div class="actions"><button class="primary" id="start">Start war</button><button class="primary alt" id="campaign-open">Campaign</button><button class="primary alt" id="tutorial">Tutorial</button><button id="training">Training: learn the quick-time events</button><button id="setup-help">How to play</button><button id="setup-settings">Settings</button></div>
       <div class="watch-row"><span>Watch two AIs fight (you observe):</span><div class="seg" data-key="watchLeft"><button data-v="random">Random</button>${RIVALS.map((p) => `<button data-v="${p}">${PERSONALITIES[p].label}</button>`).join('')}</div><span class="muted">vs the Rival above</span><button id="watch">Watch AI vs AI</button></div>
     </div>
   </section>
@@ -164,6 +170,9 @@ app.innerHTML = `
           <p><b>Rout:</b> a side below a quarter of its peak breaks and takes 25% extra losses. Chase a routing enemy with <b>Pursuit</b>.</p>
           <p><b>Stances</b> (dock): Assault +20% damage, Hold −20% damage taken, Skirmish +25% march speed. Each brings more of one event type.</p>
           <p>Red arrows at the screen edge point to your other battles that are going badly. Click one to jump there.</p>
+          <p><b>Sieges:</b> storming a fort or capital brings the <b>Battering Ram</b> (click the gate on three beats: the walls drop for 15 s). Holding one brings <b>Boiling Oil</b> (hold on the wall and sweep over every ladder).</p>
+          <h3>Modes</h3>
+          <p><b>Campaign:</b> ten missions against the four rivals, each with its own map, objective and two bonus stars. Winning a mission opens the next. <b>Training</b> drills any event; its <b>Gauntlet</b> throws every event at you faster and faster until you miss three, for a high score.</p>
           <h3>Commanders and rivals</h3>
           <p>Pick a <b>commander</b> before each war: the Archer (stronger, easier Volleys), the Duelist (Slash kills, duel edge), the Iron Wall (free Parry misses, stronger walls), the Raider (fast columns, ambush momentum) or the Herald (faster rally meter).</p>
           <p>Your <b>rival</b> has a personality and a commander of their own: Varric the Relentless (Aggressor), Lady Morwen of the Wall (Turtle), Silas Quickfinger (Opportunist) or Captain Rook (Gambler). Expect them to talk.</p>
@@ -207,7 +216,20 @@ app.innerHTML = `
       <div class="title" id="end-title"></div>
       <p class="sub" id="end-reason"></p>
       <table class="stats" id="end-stats"></table>
-      <div class="actions"><button class="primary" id="rematch">Rematch (same map)</button><button id="newgame">New war</button></div>
+      <div class="end-stars hidden" id="end-stars"></div>
+      <div class="actions"><button class="primary hidden" id="next-mission">Next mission</button><button class="primary" id="rematch">Rematch (same map)</button><button id="newgame">New war</button></div>
+    </div>
+  </section>
+
+  <section class="overlay hidden" id="campaign">
+    <div class="panel campaign">
+      <div class="camp-side">
+        <div class="title">CAMPAIGN</div>
+        <p class="sub">The Border War · <span id="camp-total"></span></p>
+        <div class="camp-list" id="camp-list"></div>
+        <button id="camp-back">Back</button>
+      </div>
+      <div class="camp-brief" id="camp-brief"></div>
     </div>
   </section>`;
 
@@ -227,7 +249,10 @@ let drag: { from: number; x: number; y: number; target: number | null; amount: n
 const seenEvents = new Set<string>();
 
 const bv = new BattleView($('bv'), {
-  onQte: (battleId, kind, success) => (game ? applyQte(game, battleId, 0, kind, success) : ''),
+  onQte: (battleId, kind, success) => {
+    campaign?.noteQte(kind, success);
+    return game ? applyQte(game, battleId, 0, kind, success) : '';
+  },
   onLeave: () => leaveBattle(),
   onSwitch: (id) => enterBattle(id),
   onFinisher: (id) => (game ? useFinisher(game, id, 0) : ''),
@@ -305,6 +330,27 @@ function buildSetup() {
   });
   $('start').addEventListener('click', () => startGame(false));
   $('tutorial').addEventListener('click', startTutorial);
+  $('campaign-open').addEventListener('click', openCampaign);
+  $('camp-back').addEventListener('click', () => {
+    $('campaign').classList.add('hidden');
+    refreshSetup(false);
+    $('setup').classList.remove('hidden');
+  });
+  $('campaign').addEventListener('click', (e) => {
+    const t = e.target as HTMLElement;
+    const mi = t.closest<HTMLElement>('[data-mi]')?.dataset.mi;
+    const cc = t.closest<HTMLElement>('[data-cc]')?.dataset.cc;
+    if (mi !== undefined) {
+      campaignPick = Number(mi);
+      renderCampaign();
+    } else if (cc) {
+      settings.commander = cc as CommanderId;
+      renderCampaign();
+    } else if (t.id === 'camp-start') {
+      $('campaign').classList.add('hidden');
+      startGame(false, false, MISSIONS[campaignPick]);
+    }
+  });
   $('watch').addEventListener('click', () => startGame(true));
   document.querySelectorAll<HTMLElement>('#spec-speed button').forEach((b) => b.addEventListener('click', () => setWatchSpeed(Number(b.dataset.x))));
   $('spec-stop').addEventListener('click', () => {
@@ -331,6 +377,43 @@ function buildSetup() {
   refreshSetup(true);
 }
 
+/** A mission is open once the one before it has been won. */
+const unlocked = (i: number) => i === 0 || (campaignStars[MISSIONS[i - 1].id] ?? 0) > 0;
+
+function openCampaign() {
+  $('setup').classList.add('hidden');
+  $('campaign').classList.remove('hidden');
+  if (!unlocked(campaignPick)) campaignPick = 0;
+  renderCampaign();
+}
+
+function renderCampaign() {
+  const total = MISSIONS.reduce((t, m) => t + (campaignStars[m.id] ?? 0), 0);
+  $('camp-total').textContent = `${total} / ${MISSIONS.length * 3} ★`;
+  let act = '';
+  $('camp-list').innerHTML = MISSIONS.map((m, i) => {
+    const head = m.act !== act ? `<h4>${(act = m.act)}</h4>` : '';
+    const st = campaignStars[m.id] ?? 0;
+    const open = unlocked(i);
+    return `${head}<button data-mi="${i}" class="${i === campaignPick ? 'on' : ''} ${open ? '' : 'locked'}" ${open ? '' : 'disabled'}><span>${i + 1}. ${m.title}</span><b>${open ? [0, 1, 2].map((k) => (k < st ? '★' : '☆')).join('') : '🔒'}</b></button>`;
+  }).join('');
+  const m = MISSIONS[campaignPick];
+  const p = PERSONALITIES[m.rival];
+  const made = m.make();
+  $('camp-brief').innerHTML = `
+    <div class="camp-act">${m.act} · Mission ${campaignPick + 1}</div>
+    <h2>${m.title}</h2>
+    <p class="camp-rival">Against <b>${p.name}</b> (${p.label}, ${COMMANDERS[p.commander].label}) · ${m.difficulty[0].toUpperCase() + m.difficulty.slice(1)}${m.fog ? ' · Fog of war' : ''}</p>
+    <p class="camp-story">${m.story}</p>
+    <div class="camp-goal"><b>Objective:</b> ${m.objectiveText}</div>
+    <ul class="camp-stars"><li>★ Complete the objective</li>${m.stars.map((x) => `<li>★ ${x.text}</li>`).join('')}</ul>
+    <p class="camp-tip">${m.tip}</p>
+    <canvas id="camp-preview"></canvas>
+    <div class="camp-cmd"><span>Your commander</span>${(Object.keys(COMMANDERS) as CommanderId[]).filter((c) => c !== 'none').map((c) => `<button data-cc="${c}" class="${c === settings.commander ? 'on' : ''}" title="${COMMANDERS[c].desc}">${COMMANDERS[c].label.replace('The ', '')}</button>`).join('')}</div>
+    <button class="primary" id="camp-start">Begin mission</button>`;
+  drawPreview(made.map, $<HTMLCanvasElement>('camp-preview'), made.owners.map(([o], id) => (made.owners.some(([, t]) => t) ? o : id === made.map.capitals[0] ? 0 : id === made.map.capitals[1] ? 1 : 2)));
+}
+
 function refreshSetup(regen: boolean) {
   document.querySelectorAll<HTMLElement>('#setup .seg').forEach((seg) => {
     const v = String((settings as unknown as Record<string, unknown>)[seg.dataset.key!]);
@@ -343,8 +426,7 @@ function refreshSetup(regen: boolean) {
   drawPreview(map);
 }
 
-function drawPreview(m: GraphMap) {
-  const pv = $<HTMLCanvasElement>('preview');
+function drawPreview(m: GraphMap, pv = $<HTMLCanvasElement>('preview'), owners?: number[]) {
   const S = 0.4;
   pv.width = WORLD_W * S;
   pv.height = WORLD_H * S;
@@ -361,7 +443,7 @@ function drawPreview(m: GraphMap) {
     ctx.stroke();
   }
   for (const n of m.nodes) {
-    const owner = n.id === m.capitals[0] ? 0 : n.id === m.capitals[1] ? 1 : 2;
+    const owner = (owners?.[n.id] ?? (n.id === m.capitals[0] ? 0 : n.id === m.capitals[1] ? 1 : 2)) as 0 | 1 | 2;
     ctx.fillStyle = '#141114';
     ctx.strokeStyle = OWNER_COLOR[owner];
     ctx.lineWidth = 7;
@@ -384,11 +466,13 @@ function startTutorial() {
   startGame(false, true);
 }
 
-function startGame(watch = false, tutorialMode = false) {
+function startGame(watch = false, tutorialMode = false, mission: Mission | null = null) {
   if (!map) map = generateMap(settings.seed, settings.nodes);
   spectating = watch;
   tutorial?.destroy();
   tutorial = null;
+  campaign?.destroy();
+  campaign = null;
   rival = settings.rival === 'random' ? RIVALS[Math.floor(Math.random() * RIVALS.length)] : settings.rival;
   if (watch) {
     leftRival = settings.watchLeft === 'random' ? RIVALS[Math.floor(Math.random() * RIVALS.length)] : settings.watchLeft;
@@ -406,9 +490,16 @@ function startGame(watch = false, tutorialMode = false) {
     // The lessons assume the default send amount and stance.
     setRatio(0.5);
     setStance('assault');
+  } else if (mission) {
+    // A campaign mission: its own map, garrisons, rival and objective; no war clock.
+    rival = mission.rival;
+    game = createMissionGame(mission, settings.commander);
+    campaign = new CampaignRun(app, mission, game, (text) => toast(text, `camp:${text}`, false, true));
   } else game = createGame(map, { fog: !watch && settings.fog === 'on', commanders: [myCommander, PERSONALITIES[rival].commander] });
   bv.spectating = watch;
   bv.teach = tutorialMode;
+  // In the campaign, events you have never tried are demonstrated the first time they come up.
+  bv.teachNew = !!mission;
   bv.names = names();
   document.querySelector('.force.you .lbl')!.textContent = names()[0];
   $('spec-names').textContent = `${PERSONALITIES[leftRival].name} (${PERSONALITIES[leftRival].label}) vs ${PERSONALITIES[rival].name} (${PERSONALITIES[rival].label})`;
@@ -418,7 +509,7 @@ function startGame(watch = false, tutorialMode = false) {
   document.querySelector('.force.foe .lbl')!.setAttribute('title', `${PERSONALITIES[rival].name} (${PERSONALITIES[rival].label})`);
   selected.clear();
   targeting = null;
-  ai = createAi(1, tutorialMode ? 'easy' : settings.difficulty, settings.seed, true, rival);
+  ai = createAi(1, tutorialMode ? 'easy' : mission ? mission.difficulty : settings.difficulty, settings.seed, true, rival);
   renderer.setMap(game.map);
   onResize();
   paused = false;
@@ -448,7 +539,7 @@ function showEnd() {
   setMusic(false);
   sfx(won || spectating ? 'victory' : 'defeat');
   const [n0, n1] = names();
-  $('end-title').textContent = tutorial && won ? 'TUTORIAL COMPLETE' : spectating ? `${game.winner === 0 ? n0 : n1} wins`.toUpperCase() : won ? 'VICTORY' : 'DEFEAT';
+  $('end-title').textContent = campaign && won ? 'MISSION COMPLETE' : tutorial && won ? 'TUTORIAL COMPLETE' : spectating ? `${game.winner === 0 ? n0 : n1} wins`.toUpperCase() : won ? 'VICTORY' : 'DEFEAT';
   $('end-title').className = `title ${won || spectating ? 'win' : 'loss'}`;
   const t = Math.floor(game.time);
   if (spectating) {
@@ -467,6 +558,25 @@ function showEnd() {
     row('Duels won', `${a.duelsWon} / ${a.duels}`, `${b.duelsWon} / ${b.duels}`) +
     row('Strongholds taken', a.nodesTaken, b.nodesTaken) +
     row('Troops sent', a.troopsSent, b.troopsSent);
+  // Campaign: stars, saved progress, and the way on.
+  const endStars = $('end-stars');
+  endStars.classList.toggle('hidden', !campaign);
+  $('next-mission').classList.add('hidden');
+  $('rematch').textContent = campaign ? 'Retry mission' : 'Rematch (same map)';
+  $('newgame').textContent = campaign ? 'Campaign' : 'New war';
+  if (campaign) {
+    const m = campaign.mission;
+    const got = starsFor(m, game, campaign.stats);
+    const before = campaignStars[m.id] ?? 0;
+    if (got) saveStars(m.id, got);
+    const goals = [{ text: m.objectiveText, ok: won }, ...m.stars.map((st) => ({ text: st.text, ok: won && st.test(game!, campaign!.stats) }))];
+    endStars.innerHTML = `<div class="big">${[0, 1, 2].map((i) => `<span class="${i < got ? 'on' : ''}">★</span>`).join('')}</div>` +
+      `<ul>${goals.map((x) => `<li class="${x.ok ? 'ok' : ''}">${x.ok ? '★' : '☆'} ${x.text}</li>`).join('')}</ul>` +
+      (got > before && before ? `<p class="sub">New best: ${got} stars (was ${before}).</p>` : '');
+    const idx = MISSIONS.indexOf(m);
+    if (won && idx < MISSIONS.length - 1) $('next-mission').classList.remove('hidden');
+    if (won && idx === MISSIONS.length - 1) $('end-reason').textContent += ' The Border War is won.';
+  }
   $('end').classList.remove('hidden');
 }
 
@@ -728,11 +838,27 @@ $('btn-resign').addEventListener('click', () => {
 });
 $('btn-help').addEventListener('click', () => $('help').classList.toggle('hidden'));
 $('help-close').addEventListener('click', () => $('help').classList.add('hidden'));
-$('rematch').addEventListener('click', () => (tutorial ? startTutorial() : startGame(spectating)));
+$('rematch').addEventListener('click', () => (campaign ? startGame(false, false, campaign.mission) : tutorial ? startTutorial() : startGame(spectating)));
+$('next-mission').addEventListener('click', () => {
+  if (!campaign) return;
+  campaignPick = MISSIONS.indexOf(campaign.mission) + 1;
+  startGame(false, false, MISSIONS[campaignPick]);
+});
 $('newgame').addEventListener('click', () => {
   $('spectator').classList.add('hidden');
   tutorial?.destroy();
   tutorial = null;
+  const fromCampaign = !!campaign;
+  campaign?.destroy();
+  campaign = null;
+  if (fromCampaign) {
+    $('end').classList.add('hidden');
+    document.querySelector('.hud-top')!.classList.add('hidden');
+    $('dock').classList.add('hidden');
+    game = null;
+    openCampaign();
+    return;
+  }
   $('end').classList.add('hidden');
   document.querySelector('.hud-top')!.classList.add('hidden');
   $('dock').classList.add('hidden');
@@ -786,13 +912,16 @@ function updateHud(g: Game) {
   // Resign is only offered when you are behind (by what you can see of the enemy).
   const held0 = g.nodes.filter((n) => n.owner === 0).length;
   const held1 = g.nodes.filter((n) => (hidden ? knownNode(g, 0, n.id).owner : n.owner) === 1).length;
-  const behind = t0 < t1 * 0.8 || (held0 < held1 && t0 < t1);
+  // Never in the opening 30 s: some campaign missions start you behind on purpose.
+  const behind = g.time > 30 && (t0 < t1 * 0.8 || (held0 < held1 && t0 < t1));
   $('btn-resign').classList.toggle('hidden', !behind || spectating || !!tutorial || g.winner !== null);
   if (now - resignAsk > 3) $('btn-resign').textContent = 'Resign';
   // War clock counts down; at zero, whoever holds more strongholds wins.
   const s = Math.max(0, Math.ceil(MATCH_TIME - g.time));
-  $('clock').textContent = g.noClock ? 'Tutorial' : `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')} left`;
-  $('clock').classList.toggle('urgent', s <= 120);
+  const mmss = (x: number) => `${Math.floor(x / 60)}:${String(Math.floor(x % 60)).padStart(2, '0')}`;
+  const left = campaign?.timeLeft(g) ?? null;
+  $('clock').textContent = campaign ? (left !== null ? `${mmss(left)} left` : mmss(g.time)) : g.noClock ? 'Tutorial' : `${mmss(s)} left`;
+  $('clock').classList.toggle('urgent', campaign ? left !== null && left <= 30 : !g.noClock && s <= 120);
   // Battle list in the dock: every battle you are part of, most urgent first.
   const mine = activeBattles(g)
     .filter((b) => (sideOf(b, 0)?.troops ?? 0) > 0.5)
@@ -888,6 +1017,7 @@ function tick(dt: number) {
       acc += dt * (spectating ? watchSpeed : 1);
       while (acc >= STEP) {
         if (ai0) aiStep(game, ai0, STEP);
+        if (campaign) ai.passive = campaign.passive(game);
         if (tutorial) {
           ai.passive = !tutorial.enemyFree;
           ai.pinned = tutorial.duelBattle;
@@ -909,6 +1039,7 @@ function tick(dt: number) {
   }
   updateHud(game);
   tutorial?.update(game, { bvOpen: bv.open, bvBattleId: bv.battleId });
+  campaign?.update(game, bv.open);
   if (game.winner !== null) {
     if (endShownAt < 0) endShownAt = now;
     if (now - endShownAt > 1.5 && $('end').classList.contains('hidden')) showEnd();

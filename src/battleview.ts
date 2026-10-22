@@ -279,6 +279,8 @@ export class BattleView {
     this.teaching = on;
     this.taught.clear();
   }
+  /** Campaign: demonstrate only events the player has never attempted. */
+  teachNew = false;
   /** The event being demonstrated right now (the war is frozen while this is set). */
   lesson: ViewKind | null = null;
   private forceKind: ViewKind | null = null;
@@ -549,7 +551,8 @@ export class BattleView {
 
   private spawn(g: Game | null = null) {
     const kind = this.nextKind(g);
-    if (this.teach && !this.practice && !this.lesson && !this.taught.has(kind)) {
+    const novel = this.teachNew && !((mastery[kind]?.hit ?? 0) + (mastery[kind]?.miss ?? 0));
+    if ((this.teach || novel) && !this.practice && !this.lesson && !this.taught.has(kind)) {
       // First time this event comes up: freeze the war and let a ghost cursor show how it's done.
       this.taught.add(kind);
       this.lesson = kind;

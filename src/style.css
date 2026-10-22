@@ -1187,3 +1187,198 @@ button.resign:hover {
   margin: 0 0 4px;
   color: #ffd166;
 }
+
+/* ---------- Campaign ---------- */
+.panel.campaign {
+  display: grid;
+  grid-template-columns: 300px 1fr;
+  gap: 24px;
+  width: min(1100px, calc(100% - 32px));
+  max-height: calc(100vh - 40px);
+  overflow: auto;
+}
+.camp-side {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.camp-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.camp-list h4 {
+  margin: 10px 0 2px;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  color: var(--muted);
+}
+.camp-list button {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  text-align: left;
+  padding: 8px 12px;
+}
+.camp-list button b {
+  color: #ffd166;
+  font-weight: 400;
+  letter-spacing: 2px;
+}
+.camp-list button.locked {
+  opacity: 0.45;
+}
+.camp-brief h2 {
+  margin: 2px 0 6px;
+  font-family: "Bebas Neue", sans-serif;
+  font-size: 44px;
+  letter-spacing: 0.04em;
+  font-weight: 400;
+}
+.camp-act {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+  color: #ffd166;
+}
+.camp-rival {
+  color: var(--muted);
+  margin: 0 0 10px;
+}
+.camp-rival b {
+  color: var(--text);
+}
+.camp-story {
+  line-height: 1.55;
+  margin: 0 0 12px;
+}
+.camp-goal {
+  padding: 10px 14px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.03);
+}
+.camp-stars {
+  list-style: none;
+  padding: 0;
+  margin: 10px 0;
+  color: #ffd166;
+  font-size: 14px;
+}
+.camp-stars li {
+  margin: 3px 0;
+}
+.camp-tip {
+  font-size: 13px;
+  color: var(--muted);
+  font-style: italic;
+}
+#camp-preview {
+  width: 100%;
+  border-radius: 12px;
+  border: 1px solid var(--line);
+  margin: 6px 0 10px;
+}
+.camp-cmd {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+  margin-bottom: 12px;
+}
+.camp-cmd span {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  color: var(--muted);
+  margin-right: 6px;
+}
+.camp-cmd button {
+  padding: 6px 10px;
+  font-size: 13px;
+}
+.camp-cmd button.on,
+.camp-list button.on {
+  border-color: var(--accent, #e2364d);
+  background: rgba(226, 54, 77, 0.18);
+}
+@media (max-width: 800px) {
+  .panel.campaign {
+    grid-template-columns: 1fr;
+  }
+}
+/* Objective panel during a mission. */
+.objective {
+  position: fixed;
+  left: 12px;
+  top: 72px;
+  width: min(300px, calc(100% - 24px));
+  padding: 10px 14px;
+  background: rgba(16, 11, 15, 0.9);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  z-index: 4;
+  font-size: 13px;
+  line-height: 1.45;
+}
+.objective .obj-head {
+  display: flex;
+  justify-content: space-between;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  color: #ffd166;
+}
+.objective .obj-head b {
+  color: var(--text);
+  font-size: 14px;
+  letter-spacing: 0.04em;
+}
+.objective .obj-head b.urgent {
+  color: #ff8a8a;
+}
+.objective p {
+  margin: 6px 0;
+}
+.objective .obj-progress span {
+  color: var(--muted);
+}
+.objective .obj-progress span.done {
+  color: #9ff0b5;
+  font-weight: 700;
+}
+.objective ul {
+  list-style: none;
+  padding: 0;
+  margin: 4px 0 0;
+  color: var(--muted);
+}
+.objective li.done {
+  color: #ffd166;
+}
+.objective li.failed {
+  text-decoration: line-through;
+  opacity: 0.5;
+}
+/* End screen stars. */
+.end-stars .big {
+  font-size: 44px;
+  letter-spacing: 8px;
+  color: rgba(255, 255, 255, 0.15);
+  text-align: center;
+}
+.end-stars .big .on {
+  color: #ffd166;
+  text-shadow: 0 0 18px rgba(255, 209, 102, 0.5);
+}
+.end-stars ul {
+  list-style: none;
+  padding: 0;
+  margin: 6px 0 12px;
+  color: var(--muted);
+  font-size: 14px;
+}
+.end-stars li.ok {
+  color: #ffd166;
+}
