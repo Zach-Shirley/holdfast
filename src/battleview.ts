@@ -119,6 +119,16 @@ export const DRILLS: Record<ViewKind, { name: string; color: string; steps: stri
   },
 };
 
+/** One-line instructions, for the tutorial's lesson card. */
+export const SHORT: Record<ViewKind, string> = {
+  volley: 'Click the target the moment the shrinking white ring touches it.',
+  parry: 'Click the incoming spear before it hits your shield.',
+  slash: 'Press on the filled dot and drag along the line into the ring.',
+  banner: 'Hold the mouse button down on the banner until its ring fills.',
+  duel: 'The enemy commander is here. Wait for the NOW! signal, then click it first. Clicking early loses.',
+  pursuit: 'The enemy is fleeing. Click the runners before they escape.',
+};
+
 /** Stand-in battle drawn behind the Training screen. */
 const FAKE_BATTLE: Battle = {
   id: -1,
@@ -215,6 +225,19 @@ export class BattleView {
   private pstats = { hit: 0, miss: 0, streak: 0 };
   private clicks: { x: number; y: number; t: number }[] = [];
   private lastHint = -9;
+  /** Tutorial: demonstrate each event the first time it comes up, with the battle frozen. */
+  private taught = new Set<ViewKind>();
+  private teaching = false;
+  get teach() {
+    return this.teaching;
+  }
+  set teach(on: boolean) {
+    this.teaching = on;
+    this.taught.clear();
+  }
+  /** The event being demonstrated right now (the war is frozen while this is set). */
+  lesson: ViewKind | null = null;
+  private forceKind: ViewKind | null = null;
 
   constructor(private root: HTMLElement, private hooks: BattleViewHooks) {
     root.innerHTML = `
@@ -232,7 +255,8 @@ export class BattleView {
         <button class="bv-retreat" data-el="retreat">Retreat <span>keeps 85%</span></button>
       </div>
       <div class="bv-rally" data-el="rally"><span class="lbl">Rally</span><div class="bv-rally-bar"><div data-el="rallyfill"></div></div><button class="bv-charge hidden" data-el="charge">CHARGE!</button></div>
-      <aside class="bv-practice" data-el="practice"></aside>`;
+      <aside class="bv-practice" data-el="practice"></aside>
+      <aside class="bv-lesson hidden" data-el="lesson"></aside>`;
     root.querySelectorAll<HTMLElement>('[data-el]').forEach((e) => (this.els[e.dataset.el!] = e));
     this.canvas = root.querySelector('.bv-canvas')!;
     this.ctx = this.canvas.getContext('2d')!;
@@ -255,6 +279,9 @@ export class BattleView {
     this.els.others.addEventListener('click', (e) => {
       const id = (e.target as HTMLElement).closest<HTMLElement>('[data-bid]')?.dataset.bid;
       if (id) this.hooks.onSwitch(Number(id));
+    });
+    this.els.lesson.addEventListener('click', (e) => {
+      if ((e.target as HTMLElement).closest('[data-act="try"]')) this.endLesson();
     });
     this.els.practice.addEventListener('click', (e) => {
       const el = (e.target as HTMLElement).closest<HTMLElement>('[data-kind],[data-act]');
@@ -311,7 +338,23 @@ export class BattleView {
     this.resize();
   }
 
+  /** Tutorial: stop the demonstration and let the player try the same event for real. */
+  endLesson() {
+    if (!this.lesson) return;
+    this.forceKind = this.lesson;
+    this.lesson = null;
+    this.demo = false;
+    this.mouse.down = false;
+    this.qte = null;
+    this.voice?.stop();
+    this.voice = null;
+    this.gap = 0.5;
+    this.els.lesson.classList.add('hidden');
+  }
+
   hide() {
+    if (this.lesson) this.endLesson();
+    this.forceKind = null;
     this.voice?.stop();
     this.voice = null;
     setBattleAmbience(false);
@@ -401,6 +444,12 @@ export class BattleView {
   /** Which event comes next: duels when both commanders are here, pursuit when the enemy routs, otherwise weighted by stance. */
   private nextKind(g: Game | null): ViewKind {
     if (this.practice) return this.practice;
+    if (this.lesson) return this.lesson;
+    if (this.forceKind) {
+      const k = this.forceKind;
+      this.forceKind = null;
+      return k;
+    }
     const b = g && this.battleId !== null ? getBattle(g, this.battleId) : undefined;
     if (!g || !b) return 'volley';
     if (inDuel(g, b) && this.now - this.lastDuel >= DUEL_EVERY) return 'duel';
@@ -419,6 +468,15 @@ export class BattleView {
 
   private spawn(g: Game | null = null) {
     const kind = this.nextKind(g);
+    if (this.teach && !this.practice && !this.lesson && !this.taught.has(kind)) {
+      // First time this event comes up: freeze the war and let a ghost cursor show how it's done.
+      this.taught.add(kind);
+      this.lesson = kind;
+      this.demo = true;
+      const d = DRILLS[kind];
+      this.els.lesson.innerHTML = `<div class="bv-lesson-head">New event</div><h3 style="color:${d.color}">${d.name}</h3><p>${SHORT[kind]}</p><p class="bv-lesson-fx">${d.effect}</p><p class="bv-lesson-wait">The battle is paused. Watch the demo, then:</p><button class="primary" data-act="try">Try it</button>`;
+      this.els.lesson.classList.remove('hidden');
+    }
     this.last = kind;
     const a = this.area();
     const rx = () => a.x0 + 60 + Math.random() * (a.x1 - a.x0 - 120);
@@ -470,7 +528,9 @@ export class BattleView {
       sfx('hit');
     } else if (kind === 'parry') sfx('parried');
     else if (kind !== 'pursuit') sfx('hit');
-    if (this.practice) {
+    if (this.lesson) {
+      this.floaters.push({ text: kind === 'pursuit' ? `${hits} / 3 caught` : success ? 'Like that!' : 'Miss', x, y, t: 0, good: success });
+    } else if (this.practice) {
       if (!this.demo) {
         this.pstats[success ? 'hit' : 'miss']++;
         this.pstats.streak = success ? this.pstats.streak + 1 : 0;
@@ -488,7 +548,7 @@ export class BattleView {
     if (!success && reason) this.floaters.push({ text: reason, x, y: y + 34, t: 0, good: false, small: true });
     if (!success && kind === 'parry') this.shake = 0.35;
     this.qte = null;
-    this.gap = this.practice ? 0.7 : GAP;
+    this.gap = this.practice || this.lesson ? 0.7 : GAP;
   }
 
   /** Non-failing nudge for a click in the wrong place. */

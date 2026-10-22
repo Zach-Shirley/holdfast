@@ -1076,3 +1076,52 @@ button.primary.alt {
   border-color: #ffd166;
   box-shadow: 0 0 16px rgba(255, 209, 102, 0.3);
 }
+
+/* ---------- Tutorial: event lessons ---------- */
+.bv-lesson {
+  position: absolute;
+  right: 16px;
+  top: 120px;
+  width: min(320px, calc(100% - 32px));
+  padding: 14px 16px;
+  background: rgba(16, 11, 15, 0.95);
+  border: 1px solid #ffd166;
+  border-radius: 16px;
+  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.6);
+  z-index: 4;
+  font-size: 14px;
+  line-height: 1.45;
+}
+.bv-lesson-head {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  color: #ffd166;
+}
+.bv-lesson h3 {
+  margin: 6px 0 4px;
+  font-size: 22px;
+}
+.bv-lesson p {
+  margin: 0 0 8px;
+  color: #e9d7c9;
+}
+.bv-lesson .bv-lesson-fx,
+.bv-lesson .bv-lesson-wait {
+  font-size: 12px;
+  color: var(--muted);
+}
+.bv:has(.bv-lesson:not(.hidden)) .bv-others {
+  visibility: hidden;
+}
+.coach-paused {
+  display: inline-block;
+  margin-right: 10px;
+  padding: 2px 8px;
+  border-radius: 99px;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: #2a1408;
+  background: #ffd166;
+}

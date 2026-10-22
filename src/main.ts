@@ -406,6 +406,7 @@ function startGame(watch = false, tutorialMode = false) {
     setStance('assault');
   } else game = createGame(map, { fog: !watch && settings.fog === 'on', commanders: [myCommander, PERSONALITIES[rival].commander] });
   bv.spectating = watch;
+  bv.teach = tutorialMode;
   bv.names = names();
   document.querySelector('.force.you .lbl')!.textContent = names()[0];
   $('spec-names').textContent = `${PERSONALITIES[leftRival].name} (${PERSONALITIES[leftRival].label}) vs ${PERSONALITIES[rival].name} (${PERSONALITIES[rival].label})`;
@@ -861,16 +862,25 @@ function tick(dt: number) {
     }
     return;
   }
+  // The tutorial freezes the war while you read, and while a new event is being demonstrated.
+  const reading = !!tutorial?.frozen;
   if (!paused && game.winner === null) {
-    acc += dt * (spectating ? watchSpeed : 1);
-    while (acc >= STEP) {
-      if (ai0) aiStep(game, ai0, STEP);
-      if (tutorial) ai.passive = !tutorial.enemyFree;
-      if (!tutorial || tutorial.aiActive) aiStep(game, ai, STEP);
-      step(game, STEP);
-      acc -= STEP;
+    if (!reading && !bv.lesson) {
+      acc += dt * (spectating ? watchSpeed : 1);
+      while (acc >= STEP) {
+        if (ai0) aiStep(game, ai0, STEP);
+        if (tutorial) {
+          ai.passive = !tutorial.enemyFree;
+          ai.pinned = tutorial.duelBattle;
+        }
+        if (!tutorial || tutorial.aiActive) aiStep(game, ai, STEP);
+        step(game, STEP);
+        acc -= STEP;
+      }
     }
-    bv.update(game, dt);
+    // While reading, a battle that is already over may still close itself.
+    const over = bv.battleId !== null && getBattle(game, bv.battleId)?.endedAt != null;
+    if (!reading || over) bv.update(game, dt);
   }
   if (bv.open) bv.render(game);
   else {

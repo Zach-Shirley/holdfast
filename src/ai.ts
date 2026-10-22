@@ -178,6 +178,8 @@ export interface AiState {
   started: boolean;
   /** Defend only, never attack (used by the tutorial). */
   passive: boolean;
+  /** Tutorial: the commander stays in this battle (so the player meets it in a duel). */
+  pinned: number | null;
 }
 
 export function createAi(me: Player, level: Difficulty, seed = 1, commander = true, personality: Personality = 'balanced'): AiState {
@@ -200,6 +202,7 @@ export function createAi(me: Player, level: Difficulty, seed = 1, commander = tr
     counterUntil: 0,
     started: false,
     passive: false,
+    pinned: null,
   };
 }
 
@@ -435,7 +438,14 @@ function commander(g: Game, ai: AiState, dt: number) {
   ai.focusT -= dt;
   const cur = getBattle(g, g.presence[me]);
   if (cur && (cur.endedAt !== null || (sideOf(cur, me)?.troops ?? 0) <= 0.5)) g.presence[me] = null;
-  if (ai.focusT <= 0) {
+  const pin = getBattle(g, ai.pinned);
+  if (pin && pin.endedAt === null && (sideOf(pin, me)?.troops ?? 0) > 0.5) {
+    if (g.presence[me] !== pin.id) {
+      g.presence[me] = pin.id;
+      ai.arriveT = 0;
+      ai.qteT = L.qteEvery;
+    }
+  } else if (ai.focusT <= 0) {
     ai.focusT = 0.5;
     let best: Battle | null = null;
     let bestScore = 0;

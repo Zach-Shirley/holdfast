@@ -87,21 +87,26 @@ npm run build
   - **Map sizes 12, 14 and 16** are added (strongholds pack slightly closer on big maps).
   - **Turn a column around:** click one of your marching columns and it heads back to the node it left. A click counts for the column if it is nearer the column than the stronghold.
   - **Fog of war hides more:** vision drops to 260 around strongholds and 190 around columns. Enemy counts you can see but are not within 150 of show rounded to the nearest 5 ("~25"), and the AI gets the same rough numbers. **Watchtowers** only show, and only count for the AI, in fog matches.
-- **Tutorial level** (gold **Tutorial** button on the start screen): a hand-made 7-stronghold map with a coach panel and gold pointers, 12 steps:
+- **Tutorial level** (gold **Tutorial** button on the start screen): a hand-made 7-stronghold map with a coach panel and gold pointers, 15 short steps:
   1. welcome and the goal
   2. send troops (drag)
   3. enter a battle
-  4. quick-time events and the rally meter
-  5. Charge!
-  6. what strongholds do
-  7. attacking walls: send amount, Assault stance, multi-send
-  8. rally routes (right-drag)
-  9. orders (March)
-  10. turning a column back
-  11. a scripted enemy attack: the commander flag, reinforcing and retreating
-  12. take the enemy capital
+  4. quick-time events
+  5. fill the rally meter (it starts half full here)
+  6. Charge!, and banking the meter
+  7. what strongholds do
+  8. attacking walls: send amount, Assault stance, multi-send
+  9. rally routes (right-drag)
+  10. orders (March)
+  11. turning a column back
+  12. a scripted enemy attack: briefing
+  13. hold the line
+  14. final assault briefing
+  15. take the enemy capital, with a commander duel
 
-  The enemy (Morwen, the Turtle, on Easy) stays passive until its scripted attack and only defends until the last step. There is no war clock. Steps that need an action advance by themselves, and you can skip at any time. Winning shows "Tutorial complete".
+  **Reading steps freeze the war** (a gold PAUSED tag) until you click their button, and the Charge! step stays frozen until you charge. **The first time each quick-time event comes up, the battle freezes** and a ghost cursor demonstrates it beside a short card (what to do, what it does). Then **Try it** hands it to you. In the final assault the enemy commander stays in the battle for Ironmere, so you meet it in a **duel**.
+
+  The enemy (Morwen, the Turtle, on Easy) stays passive until its scripted attack and only defends until the final assault. There is no war clock. Steps that need an action advance by themselves, and you can skip at any time. Winning shows "Tutorial complete".
 - **Training** (start screen): pick any of the six events (including Duel and Pursuit), read the steps, **watch a demo** where a ghost cursor performs it, then **practise** it on repeat with hits, misses and a streak counter.
 - **Enemy commander:** the AI plays the same quick-time events, one battle at a time, with a switching delay and a success rate set by difficulty (easy 55%, normal 70%, hard 82%). It deliberately attacks where your commander is not.
 - **Winning:** take the enemy capital. A 12-minute war clock breaks deadlocks: at zero, whoever holds more strongholds wins, with total troops as the tiebreak.
