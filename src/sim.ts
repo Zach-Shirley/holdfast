@@ -660,6 +660,14 @@ function nearestFriendly(g: Game, owner: Player, start: number, exclude: number 
 }
 
 /** Where a retreat from this battle would go, or null if there is nowhere to fall back to. */
+/** Concede the war. A plain command like every other player action. */
+export function resign(g: Game, owner: Player): boolean {
+  if (g.winner !== null) return false;
+  g.winner = (1 - owner) as Player;
+  g.winReason = owner === 0 ? 'You resigned' : 'The enemy resigned';
+  return true;
+}
+
 export function retreatTarget(g: Game, b: Battle, owner: Player): number | null {
   if (b.nodeId !== null) return nearestFriendly(g, owner, b.nodeId, b.nodeId);
   const side = sideOf(b, owner);

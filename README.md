@@ -28,6 +28,7 @@ Other controls:
 - **Click a column:** turn it back.
 - **Orders:** March, Inspire and Spy.
 - **Training:** practise any event on its own.
+- **Resign** appears in the top bar only while you are behind (fewer troops, or fewer strongholds and not more troops). Click it twice to concede.
 - **Esc** leaves a battle, **P** pauses, **M** mutes.
 
 ## Run locally
@@ -35,7 +36,7 @@ Other controls:
 ```bash
 npm install
 npm run dev     # http://127.0.0.1:5360
-npm test        # 44 tests: maps, battle maths, commanders, AI-vs-AI wars
+npm test        # 45 tests: maps, battle maths, commanders, AI-vs-AI wars
 npm run build   # static site in dist/ (deployed on Vercel from `main`)
 ```
 
@@ -43,7 +44,7 @@ It's a static site built with Vite, TypeScript and Canvas 2D. It has no backend 
 
 ## Verification
 
-- **Automated (`npm test`, 44 passing):**
+- **Automated (`npm test`, 45 passing):**
   - Map generation for every size: connected, point-symmetric and deterministic.
   - Garrison growth, captures, wall bonuses, road ambushes.
   - Battle maths, stances, rout, retreat, rally meter and Charge, including the banked meter carrying between battles.

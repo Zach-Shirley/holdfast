@@ -27,6 +27,7 @@ import {
   createGame,
   getBattle,
   inDuel,
+  resign,
   retreat,
   retreatTarget,
   sendTroops,
@@ -87,6 +88,7 @@ app.innerHTML = `
     <div class="right">
       <span class="clock" id="clock">0:00</span>
       <button id="btn-mute" title="Mute (M)">Sound</button>
+      <button id="btn-resign" class="resign hidden" title="Concede this war (only offered while you are behind)">Resign</button>
       <button id="btn-pause">Pause</button>
       <button id="btn-settings" title="Settings">⚙</button>
       <button id="btn-help">?</button>
@@ -713,6 +715,17 @@ function togglePause() {
 }
 
 $('btn-pause').addEventListener('click', togglePause);
+// Resign: offered only while you are behind; the first click asks, the second confirms.
+let resignAsk = -1;
+$('btn-resign').addEventListener('click', () => {
+  if (!game || game.winner !== null) return;
+  if (now - resignAsk > 3) {
+    resignAsk = now;
+    $('btn-resign').textContent = 'Really resign?';
+    return;
+  }
+  resign(game, 0);
+});
 $('btn-help').addEventListener('click', () => $('help').classList.toggle('hidden'));
 $('help-close').addEventListener('click', () => $('help').classList.add('hidden'));
 $('rematch').addEventListener('click', () => (tutorial ? startTutorial() : startGame(spectating)));
@@ -770,6 +783,12 @@ function updateHud(g: Game) {
   $('n0').textContent = `${g.nodes.filter((n) => n.owner === 0).length} held`;
   $('n1').textContent = `${g.nodes.filter((n) => (hidden ? knownNode(g, 0, n.id).owner : n.owner) === 1).length}${hidden ? '?' : ''} held`;
   $('p0').style.width = `${(100 * t0) / (t0 + t1 || 1)}%`;
+  // Resign is only offered when you are behind (by what you can see of the enemy).
+  const held0 = g.nodes.filter((n) => n.owner === 0).length;
+  const held1 = g.nodes.filter((n) => (hidden ? knownNode(g, 0, n.id).owner : n.owner) === 1).length;
+  const behind = t0 < t1 * 0.8 || (held0 < held1 && t0 < t1);
+  $('btn-resign').classList.toggle('hidden', !behind || spectating || !!tutorial || g.winner !== null);
+  if (now - resignAsk > 3) $('btn-resign').textContent = 'Resign';
   // War clock counts down; at zero, whoever holds more strongholds wins.
   const s = Math.max(0, Math.ceil(MATCH_TIME - g.time));
   $('clock').textContent = g.noClock ? 'Tutorial' : `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')} left`;

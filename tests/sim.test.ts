@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { aiStep, createAi, type Difficulty } from '../src/ai';
 import { WORLD_H, WORLD_W, generateMap, hops } from '../src/map';
-import { STANCES, applyDuel, applyPursuit, applyQte, createGame, getBattle, isRouting, lossRates, retreat, sendTroops, sideOf, step, useFinisher, type Battle, type Game, type Side } from '../src/sim';
+import { STANCES, applyDuel, applyPursuit, applyQte, createGame, getBattle, isRouting, lossRates, resign, retreat, sendTroops, sideOf, step, useFinisher, type Battle, type Game, type Side } from '../src/sim';
 
 function run(g: Game, seconds: number, ais: ReturnType<typeof createAi>[] = []) {
   for (let t = 0; t < seconds && g.winner === null; t += 0.05) {
@@ -276,4 +276,14 @@ describe('AI', () => {
     console.log(`commander wins ${wins}/${seeds.length * 2}`);
     expect(wins).toBeGreaterThanOrEqual(Math.ceil(seeds.length * 2 * 0.75));
   }, 120000);
+});
+
+describe('resign', () => {
+  it('resigning hands the war to the other side, once', () => {
+    const g = createGame(generateMap(3, 8));
+    expect(resign(g, 0)).toBe(true);
+    expect(g.winner).toBe(1);
+    expect(g.winReason).toBe('You resigned');
+    expect(resign(g, 1)).toBe(false);
+  });
 });

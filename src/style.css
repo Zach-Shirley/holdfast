@@ -1125,3 +1125,12 @@ button.primary.alt {
   color: #2a1408;
   background: #ffd166;
 }
+
+/* ---------- Resign ---------- */
+button.resign {
+  color: #ffb3b3;
+  border-color: rgba(255, 90, 90, 0.5);
+}
+button.resign:hover {
+  background: rgba(255, 90, 90, 0.15);
+}
